@@ -228,10 +228,12 @@ class InteractiveMapView(APIView):
         destination = request.GET.get('destination', 'Houston, TX')
         radius = float(request.GET.get('radius', 10.0))
 
+        import json
         try:
             data = run_route_optimization_pipeline(origin, destination, corridor_radius=radius)
             context = {
                 'data': data,
+                'route_geometry_json': json.dumps(data.get('route_geometry', {})),
                 'origin': origin,
                 'destination': destination,
                 'error': None,
@@ -239,6 +241,7 @@ class InteractiveMapView(APIView):
         except Exception as e:
             context = {
                 'data': None,
+                'route_geometry_json': '{}',
                 'origin': origin,
                 'destination': destination,
                 'error': str(e),

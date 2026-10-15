@@ -114,6 +114,9 @@
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
+        // Initialize Leaflet Map
+        const map = L.map('map').setView([39.8283, -98.5795], 5);
+
         // Use CARTO Voyager tiles (reliable, modern, no localhost 403 tile block)
         L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
             maxZoom: 19,
@@ -134,7 +137,7 @@
         }
 
         {% if data and data.route_geometry %}
-            const routeGeoJSON = {{ data.route_geometry|safe }};
+            const routeGeoJSON = JSON.parse('{{ route_geometry_json|escapejs }}');
             const routeLayer = L.geoJSON(routeGeoJSON, {
                 style: {
                     color: '#2563eb',
