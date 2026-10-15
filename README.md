@@ -21,8 +21,8 @@ Includes an interactive Leaflet.js route visualizer at `http://127.0.0.1:8000/ma
 ## Core Features & Architecture
 
 - **Continuous Linear Programming Optimization:** Formulates refueling as a **Continuous-State Bounded Linear Program** solved via SciPy's high-performance C++ `HiGHS` solver. Mathematically guarantees global minimum fuel expenditure while strictly tracking arrival and departure tank levels, enforcing the 50-gallon capacity constraint, and ensuring no driving leg exceeds the 500-mile vehicle range.
-- **Strict External Call Budget:** Consistently consumes **exactly 1 external routing API call** per unique route (via Open Source Routing Machine / OSRM) with in-memory caching. Resolves 99.8% of US cities locally without external geocoder calls.
-- **Rigorous Fuel Accounting:** Separates total fuel consumed by vehicle physics (`total_distance / 10`), fuel purchased at intermediate stops, cash paid at pumps, and total economic trip cost (including departure tank fuel valuation).
+- **Strict External Call Budget:** Consistently executes **one OSRM routing API call per uncached route**, plus external geocoding provider calls only if origin or destination locations cannot be resolved from the offline local US cities database (which resolves 99.8% of US municipalities locally without any external geocoding).
+- **Rigorous Fuel Accounting:** Separates total fuel consumed by vehicle physics (`total_distance / 10`), fuel purchased at intermediate stops, cash paid at pumps, and total economic trip cost (including departure tank fuel valuation and destination inventory asset balance).
 - **Sub-Second to Low-Latency Performance:** Evaluates cross-country routes (2,800 miles) in ~3.6 seconds and regional routes (240–700 miles) in 1.1–1.5 seconds.
 - **Dual Interface:** Full REST API (`POST /api/v1/optimize-route/`) for programmatic integration alongside an interactive web map (`GET /map/`) with route polyline, origin/destination pins, and clickable fuel stop popups.
 
@@ -173,61 +173,102 @@ python manage.py runserver
     "origin": {
       "query": "Chicago, IL",
       "resolved_name": "Chicago, IL",
-      "coordinates": { "latitude": 41.8781, "longitude": -87.6298 }
+      "coordinates": {
+        "latitude": 41.885847,
+        "longitude": -87.618123
+      }
     },
     "destination": {
       "query": "Atlanta, GA",
       "resolved_name": "Atlanta, GA",
-      "coordinates": { "latitude": 33.7490, "longitude": -84.3880 }
+      "coordinates": {
+        "latitude": 33.7564,
+        "longitude": -84.3918
+      }
     },
     "total_distance_miles": 684.97,
     "estimated_duration_hours": 13.4,
-    "pipeline_execution_time_ms": 1587.5
+    "pipeline_execution_time_ms": 1609.6
   },
   "fuel_economics": {
     "vehicle_parameters": {
       "max_range_miles": 500.0,
       "fuel_economy_mpg": 10.0,
       "tank_capacity_gallons": 50.0,
-      "initial_tank_state": "full (50.0 gal / 500.0 mi range at departure)"
+      "initial_tank_state": "50.0 gal (500.0 mi range at departure)"
     },
+    "reference_fuel_price_usd_per_gallon": 3.5,
+    "starting_inventory_valuation_usd": 175.0,
     "total_fuel_consumed_gallons": 68.5,
-    "total_fuel_purchased_during_trip_gallons": 20.45,
-    "total_cash_expenditure_at_pumps_usd": 59.43,
-    "estimated_total_fuel_cost_usd": 224.81,
+    "total_fuel_purchased_during_trip_gallons": 18.51,
+    "total_cash_expenditure_at_pumps_usd": 52.39,
+    "economic_cost_of_fuel_consumed_usd": 227.36,
+    "total_fuel_remaining_at_destination_gallons": 0.01,
+    "unused_starting_fuel_at_destination_gallons": 0.0,
+    "destination_inventory_valuation_usd": 0.03,
+    "destination_remaining_fuel_gallons": 0.01,
+    "estimated_total_fuel_cost_usd": 227.36,
+    "inventory_fuel_accounting": {
+      "reference_fuel_price_usd_per_gallon": 3.5,
+      "starting_tank_gallons": 50.0,
+      "starting_inventory_valuation_usd": 175.0,
+      "departure_fuel_burned_gallons": 50.0,
+      "departure_fuel_valuation_usd": 175.0,
+      "unused_starting_fuel_at_destination_gallons": 0.0,
+      "unused_starting_fuel_valuation_usd": 0.0,
+      "purchased_fuel_burned_gallons": 18.5,
+      "purchased_fuel_burned_cost_usd": 52.36,
+      "economic_cost_of_consumed_fuel_usd": 227.36,
+      "total_fuel_remaining_at_destination_gallons": 0.01,
+      "destination_inventory_valuation_usd": 0.03,
+      "total_input_valuation_usd": 227.39,
+      "total_output_valuation_usd": 227.39,
+      "is_inventory_conserved": true,
+      "conservation_equation": "Starting Inventory Valuation ($) + Pump Cash Spent ($) == Economic Cost of Consumed Fuel ($) + Destination Inventory Valuation ($)",
+      "valuation_convention": "FIFO (First-In, First-Out): Consumed fuel is drawn first from departure tank, then from purchases. Unburned purchases and unused starting fuel remain in destination inventory."
+    },
     "initial_fuel_accounting": {
       "starting_tank_gallons": 50.0,
-      "initial_fuel_burned_gallons": 48.05,
-      "initial_fuel_cost_valuation_usd": 165.38,
-      "reference_price_per_gallon": 3.442,
-      "remaining_fuel_at_destination_gallons": 1.95
+      "starting_inventory_valuation_usd": 175.0,
+      "initial_fuel_burned_gallons": 50.0,
+      "initial_fuel_cost_valuation_usd": 175.0,
+      "reference_price_per_gallon": 3.5,
+      "total_fuel_remaining_at_destination_gallons": 0.01,
+      "unused_starting_fuel_at_destination_gallons": 0.0,
+      "unused_starting_fuel_valuation_usd": 0.0,
+      "remaining_fuel_at_destination_gallons": 0.01
     }
   },
   "refueling_plan": {
     "stops_count": 2,
     "stops": [
       {
-        "opis_id": 63790,
-        "name": "SPEEDWAY #7106",
-        "address": "I-40, EXIT 280 & SR-56",
-        "city": "Baxter",
-        "state": "TN",
-        "highway": "I-40",
-        "exit_number": "280",
+        "opis_id": 70437,
+        "name": "Thorntons #155",
+        "address": "SR-1020 N, & SR1065 E",
+        "city": "Louisville",
+        "state": "KY",
+        "highway": "SR-1020",
+        "exit_number": null,
         "coordinates": {
-          "latitude": 36.1528,
-          "longitude": -85.6433,
+          "latitude": 38.2435,
+          "longitude": -85.7639,
           "precision": "city_corridor_centroid",
           "source": "US_CITIES_GNIS_DATABASE",
-          "corridor_offset_miles": 0.8
+          "corridor_offset_miles": 0.61
         },
-        "retail_price_per_gallon": 3.066,
-        "price_range": [3.066, 3.066],
+        "retail_price_per_gallon": 2.9057,
+        "price_range": [
+          2.9057,
+          2.9057
+        ],
         "reported_variants_count": 1,
-        "mile_marker": 480.6,
-        "distance_from_last_stop_miles": 480.6,
-        "gallons_purchased": 8.76,
-        "cost_usd": 26.89
+        "mile_marker": 296.48,
+        "distance_from_last_stop_miles": 296.48,
+        "gallons_purchased": 6.83,
+        "cost_usd": 19.85,
+        "arrival_fuel_gallons": 20.35,
+        "departure_fuel_gallons": 27.18
       },
       {
         "opis_id": 6180,
@@ -238,62 +279,80 @@ python manage.py runserver
         "highway": "I-24",
         "exit_number": "180B",
         "coordinates": {
-          "latitude": 35.0456,
-          "longitude": -85.3097,
+          "latitude": 35.0455,
+          "longitude": -85.3081,
           "precision": "city_corridor_centroid",
           "source": "US_CITIES_GNIS_DATABASE",
-          "corridor_offset_miles": 1.4
+          "corridor_offset_miles": 5.81
         },
-        "retail_price_per_gallon": 2.786,
-        "price_range": [2.786, 2.786],
+        "retail_price_per_gallon": 2.7857,
+        "price_range": [
+          2.7857,
+          2.7857
+        ],
         "reported_variants_count": 1,
-        "mile_marker": 568.2,
-        "distance_from_last_stop_miles": 87.6,
+        "mile_marker": 568.19,
+        "distance_from_last_stop_miles": 271.71,
         "gallons_purchased": 11.68,
-        "cost_usd": 32.54
+        "cost_usd": 32.54,
+        "arrival_fuel_gallons": 0.01,
+        "departure_fuel_gallons": 11.69
       }
     ],
     "driving_legs": [
       {
         "from_label": "Origin",
-        "to_label": "SPEEDWAY #7106",
+        "to_label": "Thorntons #155",
         "from_mile": 0.0,
-        "to_mile": 480.6,
-        "distance_miles": 480.6,
-        "gallons": 48.06,
-        "price": 3.442,
-        "cost_usd": 165.42
+        "to_mile": 296.48,
+        "distance_miles": 296.48,
+        "gallons": 29.65,
+        "price": 2.9057,
+        "cost_usd": 19.85,
+        "arrival_fuel_gallons": 20.35,
+        "gallons_purchased": 6.83,
+        "departure_fuel_gallons": 27.18
       },
       {
-        "from_label": "SPEEDWAY #7106",
+        "from_label": "Thorntons #155",
         "to_label": "Circle #4703923",
-        "from_mile": 480.6,
-        "to_mile": 568.2,
-        "distance_miles": 87.6,
-        "gallons": 8.76,
-        "price": 3.066,
-        "cost_usd": 26.89
+        "from_mile": 296.48,
+        "to_mile": 568.19,
+        "distance_miles": 271.71,
+        "gallons": 27.17,
+        "price": 2.7857,
+        "cost_usd": 32.54,
+        "arrival_fuel_gallons": 0.01,
+        "gallons_purchased": 11.68,
+        "departure_fuel_gallons": 11.69
       },
       {
         "from_label": "Circle #4703923",
         "to_label": "Destination",
-        "from_mile": 568.2,
+        "from_mile": 568.19,
         "to_mile": 684.97,
-        "distance_miles": 116.77,
+        "distance_miles": 116.78,
         "gallons": 11.68,
-        "price": 2.786,
-        "cost_usd": 32.54
+        "price": 0.0,
+        "cost_usd": 0.0,
+        "arrival_fuel_gallons": 0.01,
+        "gallons_purchased": 0.0,
+        "departure_fuel_gallons": 0.01
       }
     ]
   },
   "route_geometry": {
     "type": "LineString",
-    "coordinates": [[-87.6298, 41.8781], "...", [-84.3880, 33.7490]]
+    "coordinates": [
+      [-87.618123, 41.885847],
+      "...",
+      [-84.3918, 33.7564]
+    ]
   },
   "assumptions_and_limitations": {
     "vehicle_model": "Standard heavy truck with 500-mile max range and uniform 10 MPG fuel economy.",
-    "starting_fuel_rule": "Vehicle is assumed to depart with a full 50-gallon tank. Cash expenditure covers fuel bought during the journey; estimated total fuel cost includes valuation of starting fuel consumed.",
-    "coordinate_precision": "Truck stops are mapped to verified highway corridor coordinates derived from national geographic gazetteer and interstate junction reference. Stations are not represented as exact pump GPS points.",
+    "starting_fuel_rule": "Vehicle departs with 50.0 gallons in tank. Cash expenditure covers fuel bought during the journey; estimated total fuel cost includes valuation of starting fuel consumed.",
+    "coordinate_precision": "Truck stops are mapped to verified highway corridor coordinates derived from national geographic gazetteer and interstate junction reference (city corridor centroids). Stations are not represented as exact pump GPS points.",
     "fuel_pricing": "Default price selection policy 'min'. Multiple prices per terminal reflect reported fuel grade variants; station price ranges are documented per stop.",
     "routing_provider": "Open Source Routing Machine (OSRM) driving profile via public endpoint."
   },
@@ -312,7 +371,7 @@ python manage.py runserver
 
 ## Automated Test Suite
 
-The test suite contains **40 unit and integration tests** verifying all requirements without depending on live network services:
+The test suite contains **43 unit and integration tests** verifying all requirements without depending on live network services:
 
 ```bash
 python manage.py test tests
@@ -320,11 +379,11 @@ python manage.py test tests
 
 ### Test Coverage Highlights:
 - **`tests/test_optimizer.py` (11 tests):** Input bounds and NaN/inf rejection, starting fuel below capacity (20 gal), short routes (<500 mi), cheap-station capacity top-offs, global vs local price coordination, closed-form known-cost verification, 500-mile gap infeasibility, empty candidate dataset, full-precision physical conservation, and backward-only rounding deficit correction strictly at prior reachable stops with headroom.
-- **`tests/test_accounting.py` (6 tests):** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, strict non-clamping negative balance rejection, FIFO fuel inventory valuation with destination ending asset reconciliation, and exact mathematical assertions for the inventory conservation equation across short and multi-stop trips under both default ($3.50) and custom reference prices.
+- **`tests/test_accounting.py` (7 tests):** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, strict non-clamping negative balance rejection, FIFO fuel inventory valuation with destination ending asset reconciliation, exact mathematical assertions for the inventory conservation equation across short and multi-stop trips under both default ($3.50) and custom reference prices, and end-to-end optimizer and accounting physical reconciliation identity.
 - **`tests/test_corridor.py` (3 tests):** Haversine distance accuracy, station filtering within 10-mile radius, exclusion of distant stations, and mile marker ordering.
 - **`tests/test_geocoding.py` (7 tests):** Raw coordinate parsing, US boundary enforcement, local cache resolution, mocked Nominatim fallback, and timeout handling.
 - **`tests/test_fuel_data.py` (4 tests):** Highway and exit parsing regex (Interstate, US Highway, State Route), and Canadian province filtering.
-- **`tests/test_api.py` (9 tests):** Successful POST requests, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, custom reference fuel price requests, end-to-end API inventory conservation assertions, and interactive map HTML rendering.
+- **`tests/test_api.py` (11 tests):** Successful POST requests, GET query parameter support (`GET /api/v1/optimize-route/?origin=...&destination=...`), GET missing parameter validation error handling, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, custom reference fuel price requests, end-to-end API inventory conservation assertions, and interactive map HTML rendering.
 
 ---
 

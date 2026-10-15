@@ -140,24 +140,13 @@ class OptimizeRouteView(APIView):
     Calculates driving route, identifies optimal cost-effective fuel stops within
     a 500-mile range constraint, and computes complete fuel accounting.
     """
-    def post(self, request):
-        serializer = RouteOptimizationRequestSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(
-                {
-                    'status': 'error',
-                    'error_type': 'VALIDATION_ERROR',
-                    'errors': serializer.errors,
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        origin = serializer.validated_data['origin']
-        destination = serializer.validated_data['destination']
-        radius = serializer.validated_data.get('corridor_radius_miles', 10.0)
-        policy = serializer.validated_data.get('price_policy', 'min')
-        starting_tank = serializer.validated_data.get('starting_tank_gallons', 50.0)
-        ref_price = serializer.validated_data.get('reference_fuel_price')
+    def _execute_optimization(self, validated_data):
+        origin = validated_data['origin']
+        destination = validated_data['destination']
+        radius = validated_data.get('corridor_radius_miles', 10.0)
+        policy = validated_data.get('price_policy', 'min')
+        starting_tank = validated_data.get('starting_tank_gallons', 50.0)
+        ref_price = validated_data.get('reference_fuel_price')
 
         try:
             result = run_route_optimization_pipeline(
@@ -226,9 +215,23 @@ class OptimizeRouteView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    def post(self, request):
+        serializer = RouteOptimizationRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    'status': 'error',
+                    'error_type': 'VALIDATION_ERROR',
+                    'errors': serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return self._execute_optimization(serializer.validated_data)
+
     def get(self, request):
         """
         Supports GET for convenient manual testing via browser or query params.
+        Example: /api/v1/optimize-route/?origin=Dallas,%20TX&destination=Houston,%20TX
         """
         serializer = RouteOptimizationRequestSerializer(data=request.query_params)
         if not serializer.is_valid():
@@ -240,7 +243,7 @@ class OptimizeRouteView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
-        return self.post(request)
+        return self._execute_optimization(serializer.validated_data)
 
 
 class InteractiveMapView(APIView):

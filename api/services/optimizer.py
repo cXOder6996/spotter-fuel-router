@@ -351,8 +351,8 @@ def optimize_fuel_stops(
         if dist > max_range_miles + NUMERICAL_TOLERANCE:
             raise InfeasibleRouteError(f"Driving leg of {dist:.1f} miles exceeds maximum vehicle range.")
 
-        burn = round(dist / fuel_economy_mpg, 4)
-        raw_arrival_fuel = curr_fuel - burn
+        burn_exact = dist / fuel_economy_mpg
+        raw_arrival_fuel = curr_fuel - burn_exact
 
         # Validate raw calculated value against numerical tolerance (no clamping!)
         if raw_arrival_fuel < -NUMERICAL_TOLERANCE:
@@ -385,7 +385,7 @@ def optimize_fuel_stops(
             'from_mile': curr_mile,
             'to_mile': stop_mile,
             'distance_miles': dist,
-            'gallons': round(burn, 2),
+            'gallons': round(dist / fuel_economy_mpg, 2),
             'price': station.primary_price,
             'cost_usd': cost_at_station,
             'arrival_fuel_gallons': arrival_fuel,
@@ -411,8 +411,8 @@ def optimize_fuel_stops(
     if final_dist > max_range_miles + NUMERICAL_TOLERANCE:
         raise InfeasibleRouteError(f"Final driving leg of {final_dist:.1f} miles exceeds maximum vehicle range.")
 
-    final_burn = round(final_dist / fuel_economy_mpg, 4)
-    raw_dest_fuel = curr_fuel - final_burn
+    final_burn_exact = final_dist / fuel_economy_mpg
+    raw_dest_fuel = curr_fuel - final_burn_exact
 
     if raw_dest_fuel < -NUMERICAL_TOLERANCE:
         raise InfeasibleRouteError(
@@ -420,7 +420,16 @@ def optimize_fuel_stops(
             f"at mile {total_distance_miles:.1f}."
         )
 
-    dest_arrival_fuel = 0.0 if abs(raw_dest_fuel) <= NUMERICAL_TOLERANCE else round(raw_dest_fuel, 2)
+    # Reconciled destination fuel strictly matches trip-level physical conservation
+    total_fuel_consumed = round(total_distance_miles / fuel_economy_mpg, 2)
+    total_purchased = round(sum(b for _, b in planned_stops), 2)
+    reconciled_dest_fuel = round(initial_tank_gallons + total_purchased - total_fuel_consumed, 2)
+
+    dest_arrival_fuel = (
+        0.0 if abs(raw_dest_fuel) <= NUMERICAL_TOLERANCE
+        else reconciled_dest_fuel if abs(raw_dest_fuel - reconciled_dest_fuel) <= 0.02
+        else round(raw_dest_fuel, 2)
+    )
 
     legs.append({
         'from_label': 'Origin' if curr_mile == 0.0 else selected_stops[-1]['station'].name,
@@ -428,7 +437,7 @@ def optimize_fuel_stops(
         'from_mile': curr_mile,
         'to_mile': total_distance_miles,
         'distance_miles': final_dist,
-        'gallons': round(final_burn, 2),
+        'gallons': round(final_dist / fuel_economy_mpg, 2),
         'price': 0.0,
         'cost_usd': 0.0,
         'arrival_fuel_gallons': dest_arrival_fuel,

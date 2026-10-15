@@ -240,3 +240,26 @@ class RouteOptimizationAPITests(TestCase):
         response = self.client.post('/api/v1/optimize-route/', payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
         self.assertEqual(response.json()['error_type'], 'INFEASIBLE_ROUTE')
+
+    @patch('api.views.get_driving_route')
+    def test_get_method_optimize_route_success(self, mock_route):
+        """
+        Verifies GET /api/v1/optimize-route/?origin=...&destination=... returns HTTP 200
+        and executes optimization pipeline correctly with query parameters.
+        """
+        mock_route.return_value = self.mock_osrm_dallas_houston
+        response = self.client.get('/api/v1/optimize-route/?origin=Dallas,%20TX&destination=Houston,%20TX')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertEqual(data['status'], 'success')
+        self.assertEqual(data['trip_summary']['total_distance_miles'], 239.5)
+        self.assertEqual(data['fuel_economics']['total_fuel_consumed_gallons'], 23.95)
+
+    def test_get_method_validation_error(self):
+        """Verifies GET with missing required destination returns HTTP 400 VALIDATION_ERROR."""
+        response = self.client.get('/api/v1/optimize-route/?origin=Dallas,%20TX')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        data = response.json()
+        self.assertEqual(data['status'], 'error')
+        self.assertEqual(data['error_type'], 'VALIDATION_ERROR')
+        self.assertIn('destination', data['errors'])

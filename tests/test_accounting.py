@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 from api.services.accounting import calculate_fuel_accounting
+from api.services.optimizer import optimize_fuel_stops
 
 
 class FuelAccountingTests(unittest.TestCase):
@@ -201,6 +202,87 @@ class FuelAccountingTests(unittest.TestCase):
         self.assertEqual(inv['total_input_valuation_usd'], 227.39)
         self.assertEqual(inv['total_output_valuation_usd'], 227.39)
         self.assertTrue(inv['is_inventory_conserved'])
+
+    def test_end_to_end_optimizer_and_accounting_reconciliation_identity(self):
+        """
+        End-to-end verification that the optimizer's selected stops, leg-level fuel states,
+        and accounting totals reconcile against the exact same physical quantities without
+        rounding divergence or artificial clamping.
+        """
+        candidates = [
+            self.make_mock_stop(1, "Stop 1", 296.48, 0.0, 2.9057),
+            self.make_mock_stop(2, "Stop 2", 568.19, 0.0, 2.7857),
+        ]
+        total_dist = 684.97
+        initial_tank = 50.0
+        mpg = 10.0
+        ref_price = 3.50
+
+        # Step 1: Optimize fuel stops
+        opt_res = optimize_fuel_stops(
+            total_distance_miles=total_dist,
+            candidate_stops=candidates,
+            max_range_miles=500.0,
+            fuel_economy_mpg=mpg,
+            tank_capacity_gallons=initial_tank,
+            initial_tank_gallons=initial_tank,
+        )
+        self.assertTrue(opt_res['is_feasible'])
+        legs = opt_res['legs']
+        selected = opt_res['selected_stops']
+
+        # Step 2: Compute accounting from optimizer outputs
+        acct = calculate_fuel_accounting(
+            total_distance_miles=total_dist,
+            selected_stops=selected,
+            legs=legs,
+            fuel_economy_mpg=mpg,
+            initial_tank_gallons=initial_tank,
+            reference_fuel_price=ref_price,
+        )
+
+        # 1. Assert leg-level physical conservation across every leg
+        for k, leg in enumerate(legs):
+            self.assertLessEqual(leg['distance_miles'], 500.0)
+            self.assertGreaterEqual(leg['arrival_fuel_gallons'], 0.0)
+            self.assertLessEqual(leg['arrival_fuel_gallons'], 50.0)
+            self.assertGreaterEqual(leg['departure_fuel_gallons'], 0.0)
+            self.assertLessEqual(leg['departure_fuel_gallons'], 50.0)
+
+            # Departure fuel must equal arrival fuel + gallons purchased at this stop
+            purchased_here = leg.get('gallons_purchased', 0.0)
+            self.assertAlmostEqual(
+                leg['departure_fuel_gallons'],
+                round(leg['arrival_fuel_gallons'] + purchased_here, 2),
+                places=2
+            )
+
+        # 2. Assert destination arrival fuel in legs matches trip accounting destination fuel EXACTLY
+        dest_leg = legs[-1]
+        self.assertEqual(
+            dest_leg['arrival_fuel_gallons'],
+            acct['total_fuel_remaining_at_destination_gallons']
+        )
+        self.assertEqual(
+            dest_leg['arrival_fuel_gallons'],
+            acct['destination_remaining_fuel_gallons']
+        )
+
+        # 3. Assert total fuel purchased matches sum of stop purchases
+        total_purchased_from_stops = round(sum(s['gallons_purchased'] for s in selected), 2)
+        self.assertEqual(total_purchased_from_stops, acct['fuel_purchased_during_trip_gallons'])
+
+        # 4. Assert physical conservation equation: Initial + Purchased - Consumed == Destination Remaining
+        self.assertAlmostEqual(
+            initial_tank + acct['fuel_purchased_during_trip_gallons'] - acct['total_fuel_consumed_gallons'],
+            acct['total_fuel_remaining_at_destination_gallons'],
+            places=2
+        )
+
+        # 5. Assert financial inventory conservation holds to the penny
+        inv = acct['inventory_fuel_accounting']
+        self.assertTrue(inv['is_inventory_conserved'])
+        self.assertEqual(inv['total_input_valuation_usd'], inv['total_output_valuation_usd'])
 
 
 if __name__ == '__main__':
