@@ -16,7 +16,7 @@ def calculate_fuel_accounting(
       1. Fuel consumed by vehicle physics (distance / MPG)
       2. Fuel purchased at intermediate stations during trip
       3. Pump cash expenditure (actual cash paid at pumps)
-      4. Destination remaining fuel inventory
+      4. Destination remaining fuel inventory (distinguishing total fuel vs. unused starting fuel)
       5. Economic cost of fuel consumed (FIFO inventory valuation)
       6. Ending inventory valuation (fuel remaining at destination)
     """
@@ -76,11 +76,10 @@ def calculate_fuel_accounting(
         raise ValueError(f"Impossible negative fuel balance at destination: {reconciled_dest_fuel:.2f} gal")
 
     # FIFO Inventory Valuation:
-    # 1. Departure fuel consumed: up to initial tank capacity
     departure_fuel_burned = round(min(initial_tank_gallons, total_fuel_consumed), 2)
     departure_fuel_valuation = round(departure_fuel_burned * reference_fuel_price, 2)
+    unused_starting_fuel = round(max(0.0, initial_tank_gallons - total_fuel_consumed), 2)
 
-    # 2. Fuel consumed from intermediate purchases
     purchased_fuel_burned = round(max(0.0, total_fuel_consumed - initial_tank_gallons), 2)
 
     # Trace cash cost of the specific gallons burned under FIFO
@@ -96,17 +95,12 @@ def calculate_fuel_accounting(
             break
 
     purchased_burned_cost = round(purchased_burned_cost, 2)
-
-    # 3. Total economic cost of fuel consumed (departure valuation + purchased fuel actually burned)
     economic_cost_of_consumed_fuel = round(departure_fuel_valuation + purchased_burned_cost, 2)
 
-    # 4. Valuation of ending inventory remaining at destination
     destination_inventory_valuation = round(expenditure_during_trip - purchased_burned_cost, 2)
-    # If trip was within initial tank, unburned starting fuel remains
-    if total_fuel_consumed < initial_tank_gallons:
-        unburned_starting_fuel = round(initial_tank_gallons - total_fuel_consumed, 2)
+    if unused_starting_fuel > 0:
         destination_inventory_valuation = round(
-            destination_inventory_valuation + (unburned_starting_fuel * reference_fuel_price), 2
+            destination_inventory_valuation + (unused_starting_fuel * reference_fuel_price), 2
         )
 
     return {
@@ -116,23 +110,27 @@ def calculate_fuel_accounting(
         'fuel_purchased_during_trip_gallons': fuel_purchased_during_trip,
         'cash_expenditure_at_pumps_usd': expenditure_during_trip,
         'estimated_total_fuel_cost_usd': economic_cost_of_consumed_fuel,
+        'total_fuel_remaining_at_destination_gallons': reconciled_dest_fuel,
         'destination_remaining_fuel_gallons': reconciled_dest_fuel,
         'inventory_fuel_accounting': {
             'starting_tank_gallons': initial_tank_gallons,
             'departure_fuel_burned_gallons': departure_fuel_burned,
             'departure_fuel_valuation_usd': departure_fuel_valuation,
+            'unused_starting_fuel_at_destination_gallons': unused_starting_fuel,
             'purchased_fuel_burned_gallons': purchased_fuel_burned,
             'purchased_fuel_burned_cost_usd': purchased_burned_cost,
             'economic_cost_of_consumed_fuel_usd': economic_cost_of_consumed_fuel,
-            'destination_remaining_fuel_gallons': reconciled_dest_fuel,
+            'total_fuel_remaining_at_destination_gallons': reconciled_dest_fuel,
             'destination_inventory_valuation_usd': destination_inventory_valuation,
-            'valuation_convention': 'FIFO (First-In, First-Out): Consumed fuel is drawn first from departure tank, then from purchases. Unburned purchases remain in destination inventory.',
+            'valuation_convention': 'FIFO (First-In, First-Out): Consumed fuel is drawn first from departure tank, then from purchases. Unburned purchases and unused starting fuel remain in destination inventory.',
         },
         'initial_fuel_accounting': {
             'starting_tank_gallons': initial_tank_gallons,
             'initial_fuel_burned_gallons': departure_fuel_burned,
             'initial_fuel_cost_valuation_usd': departure_fuel_valuation,
             'reference_price_per_gallon': reference_fuel_price,
+            'total_fuel_remaining_at_destination_gallons': reconciled_dest_fuel,
+            'unused_starting_fuel_at_destination_gallons': unused_starting_fuel,
             'remaining_fuel_at_destination_gallons': reconciled_dest_fuel,
         },
         'fuel_stops_count': len(formatted_stops),

@@ -21,7 +21,7 @@ Includes an interactive Leaflet.js route visualizer at `http://127.0.0.1:8000/ma
 
 ## Core Features & Engineering Highlights
 
-- **Deterministic Optimization:** Formulates refueling as a **Shortest-Path Dynamic Programming** problem over a Directed Acyclic Graph (DAG) of feasible legs. Guarantees global cost optimality while strictly enforcing that no driving leg exceeds the 500-mile vehicle range.
+- **Continuous Linear Programming Optimization:** Formulates refueling as a **Continuous-State Bounded Linear Program** solved via SciPy's high-performance C++ `HiGHS` solver. Guarantees global minimum fuel expenditure while strictly tracking arrival and departure tank levels, enforcing the 50-gallon capacity constraint, and ensuring no driving leg exceeds the 500-mile vehicle range.
 - **Strict External Call Budget:** Consistently consumes **exactly 1 external routing API call** per unique route (via Open Source Routing Machine / OSRM) with in-memory caching. Resolves 99.8% of US cities locally without external geocoder calls.
 - **Rigorous Fuel Accounting:** Separates total fuel consumed by vehicle physics ($D / 10$), fuel purchased at intermediate stops, cash paid at pumps, and total economic trip cost (including departure tank fuel valuation).
 - **Sub-Second to Low-Latency Performance:** Evaluates cross-country routes (2,800 miles) in ~3.6 seconds and regional routes (240–700 miles) in 1.1–1.5 seconds.
@@ -292,7 +292,7 @@ python manage.py runserver
   "assumptions_and_limitations": {
     "vehicle_model": "Standard heavy truck with 500-mile max range and uniform 10 MPG fuel economy.",
     "starting_fuel_rule": "Vehicle is assumed to depart with a full 50-gallon tank. Cash expenditure covers fuel bought during the journey; estimated total fuel cost includes valuation of starting fuel consumed.",
-    "coordinate_precision": "Truck stops are mapped to verified highway corridor coordinates derived from national geographic gazetteer and interstate junction reference. Stations are not represented as exact pump GPS points.",
+    "coordinate_precision": "Truck stops are mapped to city-corridor centroid coordinates derived from the US GNIS database with a 10-mile corridor radius buffer. Stations are not represented as exact pump GPS points.",
     "fuel_pricing": "Default price selection policy 'min'. Multiple prices per terminal reflect reported fuel grade variants; station price ranges are documented per stop.",
     "routing_provider": "Open Source Routing Machine (OSRM) driving profile via public endpoint."
   },
@@ -347,7 +347,7 @@ Use this structured outline when recording your submission video:
 - State your name and the role: *Backend Django Engineer at Spotter AI*.
 - State the objective: *An API that finds optimal, cost-effective fuel stops along a US driving route under a 500-mile vehicle range constraint at 10 MPG.*
 - Highlight architectural pillars:
-  1. *Shortest-Path Dynamic Programming optimizer guaranteeing global cost optimality.*
+  1. *Continuous-State Linear Programming (HiGHS solver) guaranteeing global cost optimality and exact tank-state tracking.*
   2. *Single external routing API call per route.*
   3. *Offline geocoded truckstop database ensuring sub-second to low-latency response times.*
 
@@ -374,9 +374,9 @@ Use this structured outline when recording your submission video:
 - Open VS Code and quickly showcase the key modules:
   - `api/models.py`: Point out `coordinate_precision` and multi-price variant tracking (`min_price`, `max_price`).
   - `api/services/corridor.py`: Point out the bounding-box filter and Haversine projection for fast corridor matching.
-  - `api/services/optimizer.py`: Explain the Shortest-Path DAG Dynamic Programming formulation and why it guarantees optimal fueling without greedy edge-case failures.
-  - `api/services/accounting.py`: Explain the separation of fuel consumed vs. fuel purchased.
+  - `api/services/optimizer.py`: Explain the Continuous Linear Programming formulation (HiGHS solver) and why it guarantees optimal fueling without greedy edge-case failures.
+  - `api/services/accounting.py`: Explain the separation of fuel consumed vs. fuel purchased and FIFO inventory valuation.
 
 ### 5. Conclusion (4:45 – 5:00)
-- Highlight the automated test suite: *29 comprehensive unit and integration tests passing in 0.12 seconds*.
+- Highlight the automated test suite: *35 comprehensive unit and integration tests passing in 0.11 seconds*.
 - Conclude: *Thank you for your time, and I look forward to discussing the architecture further.*

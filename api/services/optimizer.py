@@ -1,3 +1,4 @@
+import math
 import logging
 from typing import List, Dict, Any
 from scipy.optimize import linprog
@@ -13,6 +14,11 @@ class InfeasibleRouteError(Exception):
     pass
 
 
+def _is_invalid_number(val: Any) -> bool:
+    """Checks whether a value is non-numeric, NaN, or infinite."""
+    return not isinstance(val, (int, float)) or not math.isfinite(val)
+
+
 def validate_optimizer_inputs(
     total_distance_miles: float,
     candidate_stops: List[Dict[str, Any]],
@@ -23,23 +29,23 @@ def validate_optimizer_inputs(
     initial_fuel_price_estimate: float,
 ) -> None:
     """
-    Validates physical feasibility and parameter bounds before optimization.
-    Raises ValueError on invalid or physically contradictory inputs.
+    Validates physical feasibility, parameter bounds, and numeric finiteness before optimization.
+    Raises ValueError on non-finite, out-of-bounds, or physically contradictory inputs.
     """
-    if total_distance_miles < 0:
-        raise ValueError(f"Route distance cannot be negative (got {total_distance_miles}).")
+    if _is_invalid_number(total_distance_miles) or total_distance_miles < 0:
+        raise ValueError(f"Route distance must be a finite non-negative number (got {total_distance_miles}).")
 
-    if fuel_economy_mpg <= 0:
-        raise ValueError(f"Fuel economy must be strictly positive (got {fuel_economy_mpg}).")
+    if _is_invalid_number(fuel_economy_mpg) or fuel_economy_mpg <= 0:
+        raise ValueError(f"Fuel economy must be a finite positive number (got {fuel_economy_mpg}).")
 
-    if tank_capacity_gallons <= 0:
-        raise ValueError(f"Tank capacity must be strictly positive (got {tank_capacity_gallons}).")
+    if _is_invalid_number(tank_capacity_gallons) or tank_capacity_gallons <= 0:
+        raise ValueError(f"Tank capacity must be a finite positive number (got {tank_capacity_gallons}).")
 
-    if max_range_miles <= 0:
-        raise ValueError(f"Maximum range must be strictly positive (got {max_range_miles}).")
+    if _is_invalid_number(max_range_miles) or max_range_miles <= 0:
+        raise ValueError(f"Maximum range must be a finite positive number (got {max_range_miles}).")
 
-    if initial_tank_gallons < 0:
-        raise ValueError(f"Starting fuel cannot be negative (got {initial_tank_gallons}).")
+    if _is_invalid_number(initial_tank_gallons) or initial_tank_gallons < 0:
+        raise ValueError(f"Starting fuel must be a finite non-negative number (got {initial_tank_gallons}).")
 
     if initial_tank_gallons > tank_capacity_gallons + NUMERICAL_TOLERANCE:
         raise ValueError(
@@ -55,20 +61,27 @@ def validate_optimizer_inputs(
             f"implied by tank capacity and MPG ({physics_implied_range:.1f} mi)."
         )
 
-    if initial_fuel_price_estimate <= 0:
+    if _is_invalid_number(initial_fuel_price_estimate) or initial_fuel_price_estimate <= 0:
         raise ValueError(
-            f"Reference fuel price estimate must be positive (got {initial_fuel_price_estimate})."
+            f"Reference fuel price estimate must be a finite positive number (got {initial_fuel_price_estimate})."
         )
 
-    # Validate candidate station objects
+    # Validate candidate station positions and prices
     for i, s in enumerate(candidate_stops):
         if 'mile_marker' not in s or 'station' not in s:
             raise ValueError(f"Candidate stop at index {i} is missing 'mile_marker' or 'station'.")
+
+        mile_m = s['mile_marker']
+        if _is_invalid_number(mile_m):
+            raise ValueError(f"Candidate stop at index {i} has non-finite mile marker ({mile_m}).")
+        if mile_m < 0:
+            raise ValueError(f"Candidate stop at index {i} has negative mile marker ({mile_m}).")
+
         station = s['station']
-        if not hasattr(station, 'primary_price') or station.primary_price <= 0:
-            raise ValueError(f"Candidate station '{getattr(station, 'name', i)}' has non-positive fuel price.")
-        if s['mile_marker'] < 0:
-            raise ValueError(f"Candidate station '{getattr(station, 'name', i)}' has negative mile marker.")
+        if not hasattr(station, 'primary_price') or _is_invalid_number(station.primary_price) or station.primary_price <= 0:
+            raise ValueError(
+                f"Candidate station '{getattr(station, 'name', i)}' has non-positive or non-finite fuel price."
+            )
 
 
 def optimize_fuel_stops(
@@ -85,12 +98,13 @@ def optimize_fuel_stops(
     while strictly enforcing tank capacity and maximum vehicle range (500 miles).
 
     Guarantees:
-      1. Validates all inputs against physical constraints and parameter bounds.
+      1. Validates all inputs against physical bounds and numeric finiteness (rejecting NaN/inf).
       2. Departure with starting fuel level in tank (no cash paid at departure).
       3. Validates full-precision LP solution before quantization.
-      4. Re-simulates quantized purchases without artificial clamping; rejects any
+      4. Corrects any rounding deficit strictly at reachable prior stations with spare capacity.
+      5. Re-simulates quantized purchases without artificial clamping; rejects any
          material violation (> 1e-4 gal) with InfeasibleRouteError.
-      5. Correctly handles cheap-station top-offs, passes stops when leftover fuel suffices,
+      6. Correctly handles cheap-station top-offs, passes stops when leftover fuel suffices,
          and reconciles physical tank balance exactly.
     """
     # 1. Parameter validation
@@ -131,10 +145,12 @@ def optimize_fuel_stops(
             'warnings': ["Trip is within vehicle departure range. No intermediate refueling stop required."],
         }
 
-    # 3. Filter candidates strictly between origin and destination
+    # 3. Deliberately filter candidates strictly between origin and destination:
+    # Stations at mile 0.0 (origin) or >= total_distance_miles (destination) cannot serve
+    # as intermediate en-route refueling stops and are excluded.
     valid_candidates = [
         s for s in candidate_stops
-        if 0 < s['mile_marker'] < total_distance_miles
+        if 0.0 < s['mile_marker'] < total_distance_miles
     ]
 
     if not valid_candidates:
@@ -161,7 +177,6 @@ def optimize_fuel_stops(
             f"which exceeds departure vehicle range of {initial_reach:.0f} miles."
         )
 
-    # Check gap between consecutive opportunities
     all_points = [0.0] + [s['mile_marker'] for s in unique_candidates] + [total_distance_miles]
     max_gap = 0.0
     gap_start = 0.0
@@ -229,31 +244,93 @@ def optimize_fuel_stops(
     if sim_fuel < -NUMERICAL_TOLERANCE:
         raise InfeasibleRouteError("Full-precision infeasibility reaching destination.")
 
-    # 8. Quantize Purchases to 2 Decimal Places and Correct Any Rounding Deficit
+    # 8. Quantize Purchases to 2 Decimal Places and Correct Deficits ONLY at Reachable Prior Stations
     quantized_buys = [round(float(b), 2) if b >= 0.01 else 0.0 for b in raw_buys]
 
-    # Check if rounding down created a deficit on any leg
-    chk_fuel = initial_tank_gallons
-    chk_mile = 0.0
-    last_purchase_idx = None
+    # Iterative backward correction: if arrival at planned stop k (or destination) has a deficit,
+    # fuel MUST be added strictly at an earlier reachable planned stop prev_k < k with spare tank headroom.
+    max_passes = 10
+    for pass_num in range(max_passes):
+        planned = [
+            (i, unique_candidates[i], quantized_buys[i])
+            for i in range(M) if quantized_buys[i] >= 0.01
+        ]
+        chk_mile = 0.0
+        chk_fuel = initial_tank_gallons
+        dep_fuels = []
+        deficit_found = False
 
-    for i in range(M):
-        dist = miles[i] - chk_mile
-        chk_fuel -= dist * r
-        if quantized_buys[i] > 0:
-            last_purchase_idx = i
-        if chk_fuel < -NUMERICAL_TOLERANCE and last_purchase_idx is not None:
-            deficit = round(abs(chk_fuel) + 0.005, 2)
-            quantized_buys[last_purchase_idx] = round(quantized_buys[last_purchase_idx] + deficit, 2)
-            chk_fuel += deficit
-        chk_fuel += quantized_buys[i]
-        chk_mile = miles[i]
+        for plan_k, (cand_idx, cand, b) in enumerate(planned):
+            stop_mile = cand['mile_marker']
+            dist = round(stop_mile - chk_mile, 2)
+            burn = round(dist / fuel_economy_mpg, 4)
+            raw_arrival = chk_fuel - burn
 
-    final_dist = total_distance_miles - chk_mile
-    chk_fuel -= final_dist * r
-    if chk_fuel < -NUMERICAL_TOLERANCE and last_purchase_idx is not None:
-        deficit = round(abs(chk_fuel) + 0.005, 2)
-        quantized_buys[last_purchase_idx] = round(quantized_buys[last_purchase_idx] + deficit, 2)
+            if raw_arrival < -NUMERICAL_TOLERANCE:
+                deficit = max(0.01, round(abs(raw_arrival) + 0.005, 2))
+                # Search strictly backwards for an earlier planned stop prev_k < plan_k with available headroom
+                adjusted = False
+                for prev_k in range(plan_k - 1, -1, -1):
+                    prev_dep = dep_fuels[prev_k]
+                    headroom = tank_capacity_gallons - prev_dep
+                    if headroom >= 0.01:
+                        add_amt = min(deficit, round(headroom, 2))
+                        prev_cand_idx = planned[prev_k][0]
+                        quantized_buys[prev_cand_idx] = round(quantized_buys[prev_cand_idx] + add_amt, 2)
+                        adjusted = True
+                        break
+                if not adjusted:
+                    raise InfeasibleRouteError(
+                        f"Rounding deficit of {deficit:.4f} gal before reaching station "
+                        f"'{cand['station'].name}' at mile {stop_mile:.1f} cannot be remedied "
+                        f"at any prior station without exceeding tank capacity."
+                    )
+                deficit_found = True
+                break  # Re-simulate from beginning with updated purchase
+
+            arrival_fuel = 0.0 if abs(raw_arrival) <= NUMERICAL_TOLERANCE else round(raw_arrival, 2)
+            raw_departure = arrival_fuel + b
+            if raw_departure > tank_capacity_gallons + NUMERICAL_TOLERANCE:
+                raise InfeasibleRouteError(
+                    f"Refueling {b:.2f} gal at '{cand['station'].name}' exceeds tank capacity."
+                )
+            departure_fuel = (
+                tank_capacity_gallons
+                if abs(raw_departure - tank_capacity_gallons) <= NUMERICAL_TOLERANCE
+                else round(raw_departure, 2)
+            )
+            dep_fuels.append(departure_fuel)
+            chk_fuel = departure_fuel
+            chk_mile = stop_mile
+
+        if deficit_found:
+            continue
+
+        # Check destination arrival
+        final_dist = round(total_distance_miles - chk_mile, 2)
+        final_burn = round(final_dist / fuel_economy_mpg, 4)
+        raw_dest = chk_fuel - final_burn
+        if raw_dest < -NUMERICAL_TOLERANCE:
+            deficit = max(0.01, round(abs(raw_dest) + 0.005, 2))
+            adjusted = False
+            for prev_k in range(len(planned) - 1, -1, -1):
+                prev_dep = dep_fuels[prev_k]
+                headroom = tank_capacity_gallons - prev_dep
+                if headroom >= 0.01:
+                    add_amt = min(deficit, round(headroom, 2))
+                    prev_cand_idx = planned[prev_k][0]
+                    quantized_buys[prev_cand_idx] = round(quantized_buys[prev_cand_idx] + add_amt, 2)
+                    adjusted = True
+                    break
+            if not adjusted:
+                raise InfeasibleRouteError(
+                    f"Rounding deficit of {deficit:.4f} gal at Destination cannot be remedied "
+                    f"at any prior station without exceeding tank capacity."
+                )
+            continue
+
+        # Feasible with no deficits
+        break
 
     # 9. Re-simulate and Re-validate the Quantized Plan Without Clamping
     planned_stops = []
@@ -330,7 +407,6 @@ def optimize_fuel_stops(
         curr_mile = stop_mile
         curr_fuel = departure_fuel
 
-    # Final driving leg from last stop (or origin) to destination
     final_dist = round(total_distance_miles - curr_mile, 2)
     if final_dist > max_range_miles + NUMERICAL_TOLERANCE:
         raise InfeasibleRouteError(f"Final driving leg of {final_dist:.1f} miles exceeds maximum vehicle range.")

@@ -103,6 +103,8 @@ def run_route_optimization_pipeline(
             'total_fuel_purchased_during_trip_gallons': accounting['fuel_purchased_during_trip_gallons'],
             'total_cash_expenditure_at_pumps_usd': accounting['cash_expenditure_at_pumps_usd'],
             'economic_cost_of_fuel_consumed_usd': accounting['estimated_total_fuel_cost_usd'],
+            'total_fuel_remaining_at_destination_gallons': accounting['total_fuel_remaining_at_destination_gallons'],
+            'unused_starting_fuel_at_destination_gallons': accounting['inventory_fuel_accounting']['unused_starting_fuel_at_destination_gallons'],
             'destination_remaining_fuel_gallons': accounting['destination_remaining_fuel_gallons'],
             'estimated_total_fuel_cost_usd': accounting['estimated_total_fuel_cost_usd'],
             'inventory_fuel_accounting': accounting.get('inventory_fuel_accounting', {}),

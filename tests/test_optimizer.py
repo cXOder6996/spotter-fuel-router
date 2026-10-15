@@ -368,6 +368,28 @@ class FuelOptimizerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=[bad_price_station])
 
+        # Non-finite inputs: NaN and Inf
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=float('nan'), candidate_stops=mock_cand)
+
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=mock_cand, fuel_economy_mpg=float('inf'))
+
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=mock_cand, initial_tank_gallons=float('nan'))
+
+        nan_price_station = self.make_mock_station(3, "NaN Price Station", 250.0, float('nan'))
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=[nan_price_station])
+
+        nan_mile_station = self.make_mock_station(4, "NaN Mile Station", float('nan'), 3.00)
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=[nan_mile_station])
+
+        neg_mile_station = self.make_mock_station(5, "Negative Mile Station", -25.0, 3.00)
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=[neg_mile_station])
+
     def test_starting_fuel_below_capacity(self):
         """
         Tests that starting with less than a full tank (e.g. 20 gal = 200 mi range)
