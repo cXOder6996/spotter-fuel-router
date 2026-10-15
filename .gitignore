@@ -51,6 +51,8 @@ LOOM_GUIDE.md
 htmlcov/
 .pytest_cache/
 
-# OS
+# OS & Archives
 .DS_Store
 Thumbs.db
+*.zip
+
