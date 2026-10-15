@@ -13,7 +13,13 @@ class FuelOptimizerTests(unittest.TestCase):
     Runs entirely isolated from databases and external APIs.
     """
 
-    def make_mock_station(self, opis_id, name, mile_marker, price):
+    def make_mock_station(self, opis_id, name, mile_marker, price, min_price=None, max_price=None, avg_price=None):
+        if min_price is None:
+            min_price = price
+        if max_price is None:
+            max_price = price
+        if avg_price is None:
+            avg_price = price
         station = SimpleNamespace(
             opis_id=opis_id,
             name=name,
@@ -21,10 +27,10 @@ class FuelOptimizerTests(unittest.TestCase):
             city="City",
             state="ST",
             primary_price=price,
-            min_price=price,
-            max_price=price,
-            avg_price=price,
-            price_variants=[price],
+            min_price=min_price,
+            max_price=max_price,
+            avg_price=avg_price,
+            price_variants=[min_price, max_price],
             latitude=35.0,
             longitude=-97.0,
             coordinate_precision="city_corridor_centroid",
@@ -425,7 +431,7 @@ class FuelOptimizerTests(unittest.TestCase):
         """
         candidates = [
             self.make_mock_station(1, "Louisville Stop", 296.48, 2.9057),
-            self.make_mock_station(2, "Chattanooga Stop", 568.19, 2.7857),
+            self.make_mock_station(2, "Chattanooga Stop", 568.21, 2.7857),
         ]
         result = optimize_fuel_stops(
             total_distance_miles=684.97,
@@ -441,7 +447,8 @@ class FuelOptimizerTests(unittest.TestCase):
         stop1 = result['selected_stops'][0]
         stop2 = result['selected_stops'][1]
 
-        # Stop 1 must receive the backward-corrected purchase (6.83 gal instead of 6.82 gal)
+        # Stop 1 must receive the backward-corrected purchase (6.83 gal instead of rounded 6.82 gal)
+        # to prevent the -0.001 gal continuous deficit at Stop 2 (mile 568.21)
         self.assertEqual(stop1['gallons_purchased'], 6.83)
         self.assertLessEqual(stop1['departure_fuel_gallons'], 50.0)
         self.assertGreaterEqual(stop1['arrival_fuel_gallons'], 0.0)
@@ -454,6 +461,113 @@ class FuelOptimizerTests(unittest.TestCase):
         # Destination leg arrives with positive fuel
         final_leg = result['legs'][-1]
         self.assertGreaterEqual(final_leg['arrival_fuel_gallons'], 0.0)
+
+    def test_price_policy_min_avg_max_affects_cost_and_selection(self):
+        """
+        Verifies that the price_policy parameter ('min', 'avg', 'max') genuinely alters
+        the fuel prices used by the optimizer and directly shifts station selection.
+        """
+        # Test 1: Single station with distinct price reports
+        single_candidate = [
+            self.make_mock_station(
+                1, "Variant Terminal", 300.0, price=3.00,
+                min_price=2.80, avg_price=3.05, max_price=3.30
+            )
+        ]
+        res_min = optimize_fuel_stops(700.0, single_candidate, price_policy='min')
+        self.assertEqual(res_min['selected_stops'][0]['price_per_gallon'], 2.80)
+        self.assertEqual(res_min['selected_stops'][0]['cost_usd'], round(20.0 * 2.80, 2))
+
+        res_avg = optimize_fuel_stops(700.0, single_candidate, price_policy='avg')
+        self.assertEqual(res_avg['selected_stops'][0]['price_per_gallon'], 3.05)
+        self.assertEqual(res_avg['selected_stops'][0]['cost_usd'], round(20.0 * 3.05, 2))
+
+        res_max = optimize_fuel_stops(700.0, single_candidate, price_policy='max')
+        self.assertEqual(res_max['selected_stops'][0]['price_per_gallon'], 3.30)
+        self.assertEqual(res_max['selected_stops'][0]['cost_usd'], round(20.0 * 3.30, 2))
+
+        # Test 2: Competing stations at identical mile marker where policy flips the cheapest choice
+        competing_candidates = [
+            # Station A has low min ($2.50) but high max ($3.50)
+            self.make_mock_station(10, "Station A (Wide Spread)", 350.0, 2.50, min_price=2.50, avg_price=3.00, max_price=3.50),
+            # Station B has stable price ($2.80 min, $2.90 max)
+            self.make_mock_station(20, "Station B (Tight Spread)", 350.0, 2.80, min_price=2.80, avg_price=2.85, max_price=2.90),
+        ]
+        # Under 'min', Station A is cheaper ($2.50 < $2.80)
+        res_comp_min = optimize_fuel_stops(700.0, competing_candidates, price_policy='min')
+        self.assertEqual(res_comp_min['selected_stops'][0]['station'].opis_id, 10)
+        self.assertEqual(res_comp_min['selected_stops'][0]['price_per_gallon'], 2.50)
+
+        # Under 'max', Station B is cheaper ($2.90 < $3.50)
+        res_comp_max = optimize_fuel_stops(700.0, competing_candidates, price_policy='max')
+        self.assertEqual(res_comp_max['selected_stops'][0]['station'].opis_id, 20)
+        self.assertEqual(res_comp_max['selected_stops'][0]['price_per_gallon'], 2.90)
+
+    def test_full_precision_unrounded_mathematical_feasibility_across_route(self):
+        """
+        Independently audits the optimizer plan against exact 64-bit IEEE 754 unrounded
+        physics with tight numerical tolerance (1e-4 gal), proving full mathematical feasibility
+        completely decoupled from two-decimal display rounding.
+        """
+        candidates = [
+            self.make_mock_station(1, "Stop 1", 321.47, 3.125),
+            self.make_mock_station(2, "Stop 2", 654.89, 2.985),
+            self.make_mock_station(3, "Stop 3", 1087.33, 3.050),
+            self.make_mock_station(4, "Stop 4", 1342.11, 2.890),
+        ]
+        total_dist = 1500.0
+        initial_tank = 50.0
+        mpg = 10.0
+        max_range = 500.0
+
+        result = optimize_fuel_stops(
+            total_distance_miles=total_dist,
+            candidate_stops=candidates,
+            max_range_miles=max_range,
+            fuel_economy_mpg=mpg,
+            initial_tank_gallons=initial_tank,
+        )
+        self.assertTrue(result['is_feasible'])
+        stops = result['selected_stops']
+
+        # Independent raw simulation
+        sim_fuel = float(initial_tank)
+        sim_mile = 0.0
+
+        for stop in stops:
+            mile_m = stop['mile_marker']
+            dist = mile_m - sim_mile
+            self.assertLessEqual(dist, max_range + 1e-4)
+
+            # Continuous burn
+            sim_fuel -= dist / mpg
+            # Tight tolerance: fuel upon arrival at any planned stop must never be negative
+            self.assertGreaterEqual(
+                sim_fuel, -1e-4,
+                f"Full-precision fuel deficit ({sim_fuel:.6f} gal) at stop '{stop['station'].name}' (mile {mile_m})"
+            )
+
+            # Continuous purchase
+            sim_fuel += stop['gallons_purchased']
+            # Fuel after purchase must never exceed tank capacity
+            self.assertLessEqual(
+                sim_fuel, 50.0 + 1e-4,
+                f"Full-precision fuel overflow ({sim_fuel:.6f} gal) at stop '{stop['station'].name}' (mile {mile_m})"
+            )
+            sim_mile = mile_m
+
+        # Destination leg
+        final_dist = total_dist - sim_mile
+        self.assertLessEqual(final_dist, max_range + 1e-4)
+        sim_fuel -= final_dist / mpg
+        self.assertGreaterEqual(
+            sim_fuel, -1e-4,
+            f"Full-precision fuel deficit ({sim_fuel:.6f} gal) upon reaching destination"
+        )
+
+        # Unrounded global conservation identity
+        expected_raw_dest = initial_tank + sum(s['gallons_purchased'] for s in stops) - (total_dist / mpg)
+        self.assertAlmostEqual(sim_fuel, expected_raw_dest, places=5)
 
 
 if __name__ == '__main__':

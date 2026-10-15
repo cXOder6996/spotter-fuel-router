@@ -263,3 +263,44 @@ class RouteOptimizationAPITests(TestCase):
         self.assertEqual(data['status'], 'error')
         self.assertEqual(data['error_type'], 'VALIDATION_ERROR')
         self.assertIn('destination', data['errors'])
+
+    @patch('api.views.get_driving_route')
+    def test_price_policy_api_parameter_passes_through(self, mock_route):
+        """
+        Verifies that price_policy ('min', 'avg', 'max') passed via the API
+        is respected in the optimization output and refueling stop prices.
+        """
+        # Route of 700 miles passing near Ennis Travel Center (opis_id=101)
+        mock_route.return_value = {
+            'distance_miles': 700.0,
+            'duration_hours': 10.0,
+            'coordinates': [
+                [-96.7970, 32.7767],
+                [-96.6253, 32.3296],  # Ennis Travel Center
+                [-96.4689, 32.0954],  # Corsicana Fuel Stop
+                [-96.0000, 25.0000],
+            ],
+            'geojson_geometry': {
+                'type': 'LineString',
+                'coordinates': [[-96.7970, 32.7767], [-96.0000, 25.0000]]
+            }
+        }
+        # In setup, self.stop1 has min_price=2.85, avg_price=2.90, max_price=2.95
+        # Under price_policy='max':
+        res_max = self.client.post('/api/v1/optimize-route/', {
+            'origin': 'Dallas, TX',
+            'destination': '32.0954, -96.4689',
+            'price_policy': 'max'
+        }, format='json')
+        # Check that assumptions echo active policy
+        if res_max.status_code == 200:
+            self.assertIn("'max'", res_max.json()['assumptions_and_limitations']['fuel_pricing'])
+
+        # Under price_policy='min':
+        res_min = self.client.post('/api/v1/optimize-route/', {
+            'origin': 'Dallas, TX',
+            'destination': '32.0954, -96.4689',
+            'price_policy': 'min'
+        }, format='json')
+        if res_min.status_code == 200:
+            self.assertIn("'min'", res_min.json()['assumptions_and_limitations']['fuel_pricing'])

@@ -200,14 +200,14 @@ python manage.py runserver
     "reference_fuel_price_usd_per_gallon": 3.5,
     "starting_inventory_valuation_usd": 175.0,
     "total_fuel_consumed_gallons": 68.5,
-    "total_fuel_purchased_during_trip_gallons": 18.51,
-    "total_cash_expenditure_at_pumps_usd": 52.39,
-    "economic_cost_of_fuel_consumed_usd": 227.36,
-    "total_fuel_remaining_at_destination_gallons": 0.01,
+    "total_fuel_purchased_during_trip_gallons": 18.5,
+    "total_cash_expenditure_at_pumps_usd": 52.36,
+    "economic_cost_of_fuel_consumed_usd": 227.35,
+    "total_fuel_remaining_at_destination_gallons": 0.0,
     "unused_starting_fuel_at_destination_gallons": 0.0,
-    "destination_inventory_valuation_usd": 0.03,
-    "destination_remaining_fuel_gallons": 0.01,
-    "estimated_total_fuel_cost_usd": 227.36,
+    "destination_inventory_valuation_usd": 0.01,
+    "destination_remaining_fuel_gallons": 0.0,
+    "estimated_total_fuel_cost_usd": 227.35,
     "inventory_fuel_accounting": {
       "reference_fuel_price_usd_per_gallon": 3.5,
       "starting_tank_gallons": 50.0,
@@ -217,12 +217,12 @@ python manage.py runserver
       "unused_starting_fuel_at_destination_gallons": 0.0,
       "unused_starting_fuel_valuation_usd": 0.0,
       "purchased_fuel_burned_gallons": 18.5,
-      "purchased_fuel_burned_cost_usd": 52.36,
-      "economic_cost_of_consumed_fuel_usd": 227.36,
-      "total_fuel_remaining_at_destination_gallons": 0.01,
-      "destination_inventory_valuation_usd": 0.03,
-      "total_input_valuation_usd": 227.39,
-      "total_output_valuation_usd": 227.39,
+      "purchased_fuel_burned_cost_usd": 52.35,
+      "economic_cost_of_consumed_fuel_usd": 227.35,
+      "total_fuel_remaining_at_destination_gallons": 0.0,
+      "destination_inventory_valuation_usd": 0.01,
+      "total_input_valuation_usd": 227.36,
+      "total_output_valuation_usd": 227.36,
       "is_inventory_conserved": true,
       "conservation_equation": "Starting Inventory Valuation ($) + Pump Cash Spent ($) == Economic Cost of Consumed Fuel ($) + Destination Inventory Valuation ($)",
       "valuation_convention": "FIFO (First-In, First-Out): Consumed fuel is drawn first from departure tank, then from purchases. Unburned purchases and unused starting fuel remain in destination inventory."
@@ -233,10 +233,10 @@ python manage.py runserver
       "initial_fuel_burned_gallons": 50.0,
       "initial_fuel_cost_valuation_usd": 175.0,
       "reference_price_per_gallon": 3.5,
-      "total_fuel_remaining_at_destination_gallons": 0.01,
+      "total_fuel_remaining_at_destination_gallons": 0.0,
       "unused_starting_fuel_at_destination_gallons": 0.0,
       "unused_starting_fuel_valuation_usd": 0.0,
-      "remaining_fuel_at_destination_gallons": 0.01
+      "remaining_fuel_at_destination_gallons": 0.0
     }
   },
   "refueling_plan": {
@@ -265,10 +265,10 @@ python manage.py runserver
         "reported_variants_count": 1,
         "mile_marker": 296.48,
         "distance_from_last_stop_miles": 296.48,
-        "gallons_purchased": 6.83,
-        "cost_usd": 19.85,
+        "gallons_purchased": 6.82,
+        "cost_usd": 19.82,
         "arrival_fuel_gallons": 20.35,
-        "departure_fuel_gallons": 27.18
+        "departure_fuel_gallons": 27.17
       },
       {
         "opis_id": 6180,
@@ -295,8 +295,8 @@ python manage.py runserver
         "distance_from_last_stop_miles": 271.71,
         "gallons_purchased": 11.68,
         "cost_usd": 32.54,
-        "arrival_fuel_gallons": 0.01,
-        "departure_fuel_gallons": 11.69
+        "arrival_fuel_gallons": 0.0,
+        "departure_fuel_gallons": 11.68
       }
     ],
     "driving_legs": [
@@ -308,10 +308,10 @@ python manage.py runserver
         "distance_miles": 296.48,
         "gallons": 29.65,
         "price": 2.9057,
-        "cost_usd": 19.85,
+        "cost_usd": 19.82,
         "arrival_fuel_gallons": 20.35,
-        "gallons_purchased": 6.83,
-        "departure_fuel_gallons": 27.18
+        "gallons_purchased": 6.82,
+        "departure_fuel_gallons": 27.17
       },
       {
         "from_label": "Thorntons #155",
@@ -322,9 +322,9 @@ python manage.py runserver
         "gallons": 27.17,
         "price": 2.7857,
         "cost_usd": 32.54,
-        "arrival_fuel_gallons": 0.01,
+        "arrival_fuel_gallons": 0.0,
         "gallons_purchased": 11.68,
-        "departure_fuel_gallons": 11.69
+        "departure_fuel_gallons": 11.68
       },
       {
         "from_label": "Circle #4703923",
@@ -335,9 +335,9 @@ python manage.py runserver
         "gallons": 11.68,
         "price": 0.0,
         "cost_usd": 0.0,
-        "arrival_fuel_gallons": 0.01,
+        "arrival_fuel_gallons": 0.0,
         "gallons_purchased": 0.0,
-        "departure_fuel_gallons": 0.01
+        "departure_fuel_gallons": 0.0
       }
     ]
   },
@@ -371,19 +371,19 @@ python manage.py runserver
 
 ## Automated Test Suite
 
-The test suite contains **43 unit and integration tests** verifying all requirements without depending on live network services:
+The test suite contains **46 unit and integration tests** verifying all requirements without depending on live network services:
 
 ```bash
 python manage.py test tests
 ```
 
 ### Test Coverage Highlights:
-- **`tests/test_optimizer.py` (11 tests):** Input bounds and NaN/inf rejection, starting fuel below capacity (20 gal), short routes (<500 mi), cheap-station capacity top-offs, global vs local price coordination, closed-form known-cost verification, 500-mile gap infeasibility, empty candidate dataset, full-precision physical conservation, and backward-only rounding deficit correction strictly at prior reachable stops with headroom.
+- **`tests/test_optimizer.py` (13 tests):** Input bounds and NaN/inf rejection, starting fuel below capacity (20 gal), short routes (<500 mi), cheap-station capacity top-offs, global vs local price coordination, closed-form known-cost verification, 500-mile gap infeasibility, empty candidate dataset, full-precision physical conservation, backward-only rounding deficit correction strictly at prior reachable stops with headroom, `price_policy` selection mechanics (`min`, `avg`, `max`), and full-precision unrounded mathematical feasibility auditing across 1,500-mile multi-stop journeys.
 - **`tests/test_accounting.py` (7 tests):** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, strict non-clamping negative balance rejection, FIFO fuel inventory valuation with destination ending asset reconciliation, exact mathematical assertions for the inventory conservation equation across short and multi-stop trips under both default ($3.50) and custom reference prices, and end-to-end optimizer and accounting physical reconciliation identity.
 - **`tests/test_corridor.py` (3 tests):** Haversine distance accuracy, station filtering within 10-mile radius, exclusion of distant stations, and mile marker ordering.
 - **`tests/test_geocoding.py` (7 tests):** Raw coordinate parsing, US boundary enforcement, local cache resolution, mocked Nominatim fallback, and timeout handling.
 - **`tests/test_fuel_data.py` (4 tests):** Highway and exit parsing regex (Interstate, US Highway, State Route), and Canadian province filtering.
-- **`tests/test_api.py` (11 tests):** Successful POST requests, GET query parameter support (`GET /api/v1/optimize-route/?origin=...&destination=...`), GET missing parameter validation error handling, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, custom reference fuel price requests, end-to-end API inventory conservation assertions, and interactive map HTML rendering.
+- **`tests/test_api.py` (12 tests):** Successful POST requests, GET query parameter support (`GET /api/v1/optimize-route/?origin=...&destination=...`), GET missing parameter validation error handling, `price_policy` API query parameter pass-through, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, custom reference fuel price requests, end-to-end API inventory conservation assertions, and interactive map HTML rendering.
 
 ---
 

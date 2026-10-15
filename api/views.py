@@ -63,6 +63,7 @@ def run_route_optimization_pipeline(
         tank_capacity_gallons=getattr(settings, 'VEHICLE_TANK_CAPACITY_GALLONS', 50.0),
         initial_tank_gallons=starting_tank_gallons,
         initial_fuel_price_estimate=ref_price,
+        price_policy=price_policy,
     )
 
     # Step 5: Accounting (Strict physical tank reconciliation)

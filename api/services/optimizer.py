@@ -19,6 +19,29 @@ def _is_invalid_number(val: Any) -> bool:
     return not isinstance(val, (int, float)) or not math.isfinite(val)
 
 
+def get_station_price(station: Any, price_policy: str = 'min') -> float:
+    """
+    Returns the retail fuel price per gallon for a station according to the requested price policy.
+    Supports:
+      - 'min': lowest reported price variant (default)
+      - 'max': highest reported price variant
+      - 'avg': mean of reported price variants
+    Gracefully falls back to primary_price or min_price for single-variant stations or test fixtures.
+    """
+    policy = (price_policy or 'min').strip().lower()
+    if policy == 'max' and hasattr(station, 'max_price') and station.max_price is not None:
+        return float(station.max_price)
+    elif policy == 'avg' and hasattr(station, 'avg_price') and station.avg_price is not None:
+        return float(station.avg_price)
+    elif policy == 'min' and hasattr(station, 'min_price') and station.min_price is not None:
+        return float(station.min_price)
+    elif hasattr(station, 'primary_price') and station.primary_price is not None:
+        return float(station.primary_price)
+    elif hasattr(station, 'min_price') and station.min_price is not None:
+        return float(station.min_price)
+    raise ValueError(f"Candidate station '{getattr(station, 'name', 'Unknown')}' has no valid price.")
+
+
 def validate_optimizer_inputs(
     total_distance_miles: float,
     candidate_stops: List[Dict[str, Any]],
@@ -27,6 +50,7 @@ def validate_optimizer_inputs(
     tank_capacity_gallons: float,
     initial_tank_gallons: float,
     initial_fuel_price_estimate: float,
+    price_policy: str = 'min',
 ) -> None:
     """
     Validates physical feasibility, parameter bounds, and numeric finiteness before optimization.
@@ -78,9 +102,10 @@ def validate_optimizer_inputs(
             raise ValueError(f"Candidate stop at index {i} has negative mile marker ({mile_m}).")
 
         station = s['station']
-        if not hasattr(station, 'primary_price') or _is_invalid_number(station.primary_price) or station.primary_price <= 0:
+        price = get_station_price(station, price_policy)
+        if _is_invalid_number(price) or price <= 0:
             raise ValueError(
-                f"Candidate station '{getattr(station, 'name', i)}' has non-positive or non-finite fuel price."
+                f"Candidate station '{getattr(station, 'name', i)}' has non-positive or non-finite fuel price ({price})."
             )
 
 
@@ -92,6 +117,7 @@ def optimize_fuel_stops(
     tank_capacity_gallons: float = 50.0,
     initial_tank_gallons: float = 50.0,
     initial_fuel_price_estimate: float = 3.50,
+    price_policy: str = 'min',
 ) -> Dict[str, Any]:
     """
     Optimizes refueling stops along a driving route to minimize cash fuel expenditure
@@ -116,6 +142,7 @@ def optimize_fuel_stops(
         tank_capacity_gallons=tank_capacity_gallons,
         initial_tank_gallons=initial_tank_gallons,
         initial_fuel_price_estimate=initial_fuel_price_estimate,
+        price_policy=price_policy,
     )
 
     warnings = []
@@ -159,12 +186,12 @@ def optimize_fuel_stops(
             f"({initial_reach:.0f} miles), but zero fuel stations were found along the route corridor."
         )
 
-    # 4. Deduplicate stations at identical mile markers, retaining the cheapest option
+    # 4. Deduplicate stations at identical mile markers, retaining the cheapest option under active policy
     by_mile = {}
     for s in valid_candidates:
         m = round(s['mile_marker'], 2)
-        price = s['station'].primary_price
-        if m not in by_mile or price < by_mile[m]['station'].primary_price:
+        price = get_station_price(s['station'], price_policy)
+        if m not in by_mile or price < get_station_price(by_mile[m]['station'], price_policy):
             by_mile[m] = s
 
     unique_candidates = sorted(by_mile.values(), key=lambda s: s['mile_marker'])
@@ -197,7 +224,7 @@ def optimize_fuel_stops(
     # 6. Continuous-Fuel Linear Programming Formulation
     M = len(unique_candidates)
     miles = [s['mile_marker'] for s in unique_candidates]
-    prices = [s['station'].primary_price for s in unique_candidates]
+    prices = [get_station_price(s['station'], price_policy) for s in unique_candidates]
     r = 1.0 / fuel_economy_mpg
 
     A_ub = []
@@ -256,22 +283,22 @@ def optimize_fuel_stops(
             for i in range(M) if quantized_buys[i] >= 0.01
         ]
         chk_mile = 0.0
-        chk_fuel = initial_tank_gallons
-        dep_fuels = []
+        chk_fuel_exact = float(initial_tank_gallons)
+        dep_fuels_exact = []
         deficit_found = False
 
         for plan_k, (cand_idx, cand, b) in enumerate(planned):
             stop_mile = cand['mile_marker']
-            dist = round(stop_mile - chk_mile, 2)
-            burn = round(dist / fuel_economy_mpg, 4)
-            raw_arrival = chk_fuel - burn
+            dist = stop_mile - chk_mile
+            burn_exact = dist / fuel_economy_mpg
+            raw_arrival = chk_fuel_exact - burn_exact
 
             if raw_arrival < -NUMERICAL_TOLERANCE:
                 deficit = max(0.01, round(abs(raw_arrival) + 0.005, 2))
                 # Search strictly backwards for an earlier planned stop prev_k < plan_k with available headroom
                 adjusted = False
                 for prev_k in range(plan_k - 1, -1, -1):
-                    prev_dep = dep_fuels[prev_k]
+                    prev_dep = dep_fuels_exact[prev_k]
                     headroom = tank_capacity_gallons - prev_dep
                     if headroom >= 0.01:
                         add_amt = min(deficit, round(headroom, 2))
@@ -288,33 +315,28 @@ def optimize_fuel_stops(
                 deficit_found = True
                 break  # Re-simulate from beginning with updated purchase
 
-            arrival_fuel = 0.0 if abs(raw_arrival) <= NUMERICAL_TOLERANCE else round(raw_arrival, 2)
-            raw_departure = arrival_fuel + b
+            raw_departure = raw_arrival + b
             if raw_departure > tank_capacity_gallons + NUMERICAL_TOLERANCE:
-                raise InfeasibleRouteError(
-                    f"Refueling {b:.2f} gal at '{cand['station'].name}' exceeds tank capacity."
-                )
-            departure_fuel = (
-                tank_capacity_gallons
-                if abs(raw_departure - tank_capacity_gallons) <= NUMERICAL_TOLERANCE
-                else round(raw_departure, 2)
-            )
-            dep_fuels.append(departure_fuel)
-            chk_fuel = departure_fuel
+                overflow = max(0.01, round(raw_departure - tank_capacity_gallons + 0.005, 2))
+                quantized_buys[cand_idx] = max(0.0, round(quantized_buys[cand_idx] - overflow, 2))
+                deficit_found = True
+                break
+            dep_fuels_exact.append(min(tank_capacity_gallons, raw_departure))
+            chk_fuel_exact = min(tank_capacity_gallons, raw_departure)
             chk_mile = stop_mile
 
         if deficit_found:
             continue
 
         # Check destination arrival
-        final_dist = round(total_distance_miles - chk_mile, 2)
-        final_burn = round(final_dist / fuel_economy_mpg, 4)
-        raw_dest = chk_fuel - final_burn
+        final_dist = total_distance_miles - chk_mile
+        final_burn_exact = final_dist / fuel_economy_mpg
+        raw_dest = chk_fuel_exact - final_burn_exact
         if raw_dest < -NUMERICAL_TOLERANCE:
             deficit = max(0.01, round(abs(raw_dest) + 0.005, 2))
             adjusted = False
             for prev_k in range(len(planned) - 1, -1, -1):
-                prev_dep = dep_fuels[prev_k]
+                prev_dep = dep_fuels_exact[prev_k]
                 headroom = tank_capacity_gallons - prev_dep
                 if headroom >= 0.01:
                     add_amt = min(deficit, round(headroom, 2))
@@ -339,20 +361,21 @@ def optimize_fuel_stops(
             planned_stops.append((unique_candidates[i], b))
 
     curr_mile = 0.0
-    curr_fuel = initial_tank_gallons
+    curr_fuel_exact = float(initial_tank_gallons)
     selected_stops = []
     legs = []
 
     for cand, gallons_to_buy in planned_stops:
         station = cand['station']
+        st_price = get_station_price(station, price_policy)
         stop_mile = cand['mile_marker']
-        dist = round(stop_mile - curr_mile, 2)
+        dist = stop_mile - curr_mile
 
         if dist > max_range_miles + NUMERICAL_TOLERANCE:
             raise InfeasibleRouteError(f"Driving leg of {dist:.1f} miles exceeds maximum vehicle range.")
 
         burn_exact = dist / fuel_economy_mpg
-        raw_arrival_fuel = curr_fuel - burn_exact
+        raw_arrival_fuel = curr_fuel_exact - burn_exact
 
         # Validate raw calculated value against numerical tolerance (no clamping!)
         if raw_arrival_fuel < -NUMERICAL_TOLERANCE:
@@ -361,32 +384,34 @@ def optimize_fuel_stops(
                 f"station '{station.name}' at mile {stop_mile:.1f}."
             )
 
-        # Normalize only insignificant floating-point error after validation
-        arrival_fuel = 0.0 if abs(raw_arrival_fuel) <= NUMERICAL_TOLERANCE else round(raw_arrival_fuel, 2)
-
-        raw_departure_fuel = arrival_fuel + gallons_to_buy
+        raw_departure_fuel = raw_arrival_fuel + gallons_to_buy
         if raw_departure_fuel > tank_capacity_gallons + NUMERICAL_TOLERANCE:
             raise InfeasibleRouteError(
                 f"Refueling {gallons_to_buy:.2f} gal at '{station.name}' exceeds tank capacity "
                 f"({raw_departure_fuel:.4f} gal > {tank_capacity_gallons:.1f} gal)."
             )
 
+        # Update exact continuous fuel for next leg
+        curr_fuel_exact = min(tank_capacity_gallons, raw_departure_fuel)
+
+        # Normalize only insignificant floating-point error after validation
+        arrival_fuel = 0.0 if abs(raw_arrival_fuel) <= NUMERICAL_TOLERANCE else round(raw_arrival_fuel, 2)
         departure_fuel = (
             tank_capacity_gallons
-            if abs(raw_departure_fuel - tank_capacity_gallons) <= NUMERICAL_TOLERANCE
-            else round(raw_departure_fuel, 2)
+            if abs(curr_fuel_exact - tank_capacity_gallons) <= NUMERICAL_TOLERANCE
+            else round(curr_fuel_exact, 2)
         )
 
-        cost_at_station = round(gallons_to_buy * station.primary_price, 2)
+        cost_at_station = round(gallons_to_buy * st_price, 2)
 
         legs.append({
-            'from_label': 'Origin' if curr_mile == 0.0 else legs[-1]['to_label'],
+            'from_label': 'Origin' if len(legs) == 0 else legs[-1]['to_label'],
             'to_label': station.name,
-            'from_mile': curr_mile,
-            'to_mile': stop_mile,
-            'distance_miles': dist,
-            'gallons': round(dist / fuel_economy_mpg, 2),
-            'price': station.primary_price,
+            'from_mile': round(curr_mile, 2),
+            'to_mile': round(stop_mile, 2),
+            'distance_miles': round(dist, 2),
+            'gallons': round(burn_exact, 2),
+            'price': st_price,
             'cost_usd': cost_at_station,
             'arrival_fuel_gallons': arrival_fuel,
             'gallons_purchased': gallons_to_buy,
@@ -395,9 +420,9 @@ def optimize_fuel_stops(
 
         selected_stops.append({
             'station': station,
-            'mile_marker': stop_mile,
+            'mile_marker': round(stop_mile, 2),
             'corridor_distance_miles': cand.get('corridor_distance_miles', 0.0),
-            'price_per_gallon': station.primary_price,
+            'price_per_gallon': st_price,
             'gallons_purchased': gallons_to_buy,
             'cost_usd': cost_at_station,
             'arrival_fuel_gallons': arrival_fuel,
@@ -405,14 +430,13 @@ def optimize_fuel_stops(
         })
 
         curr_mile = stop_mile
-        curr_fuel = departure_fuel
 
-    final_dist = round(total_distance_miles - curr_mile, 2)
+    final_dist = total_distance_miles - curr_mile
     if final_dist > max_range_miles + NUMERICAL_TOLERANCE:
         raise InfeasibleRouteError(f"Final driving leg of {final_dist:.1f} miles exceeds maximum vehicle range.")
 
     final_burn_exact = final_dist / fuel_economy_mpg
-    raw_dest_fuel = curr_fuel - final_burn_exact
+    raw_dest_fuel = curr_fuel_exact - final_burn_exact
 
     if raw_dest_fuel < -NUMERICAL_TOLERANCE:
         raise InfeasibleRouteError(
@@ -432,12 +456,12 @@ def optimize_fuel_stops(
     )
 
     legs.append({
-        'from_label': 'Origin' if curr_mile == 0.0 else selected_stops[-1]['station'].name,
+        'from_label': 'Origin' if len(legs) == 0 else selected_stops[-1]['station'].name,
         'to_label': 'Destination',
-        'from_mile': curr_mile,
-        'to_mile': total_distance_miles,
-        'distance_miles': final_dist,
-        'gallons': round(final_dist / fuel_economy_mpg, 2),
+        'from_mile': round(curr_mile, 2),
+        'to_mile': round(total_distance_miles, 2),
+        'distance_miles': round(final_dist, 2),
+        'gallons': round(final_burn_exact, 2),
         'price': 0.0,
         'cost_usd': 0.0,
         'arrival_fuel_gallons': dest_arrival_fuel,
