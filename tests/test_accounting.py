@@ -103,6 +103,36 @@ class FuelAccountingTests(unittest.TestCase):
             )
         self.assertIn("Impossible negative fuel balance", str(ctx.exception))
 
+    def test_fifo_inventory_valuation_and_destination_asset_balance(self):
+        """
+        Tests that when fuel is purchased but remains in the tank at destination,
+        economic cost of fuel consumed only counts fuel actually burned, and the
+        remaining fuel is properly accounted for as ending asset inventory.
+        """
+        stops = [self.make_mock_stop(1, "Stop 1", 450.0, 40.0, 3.00)]
+        result = calculate_fuel_accounting(
+            total_distance_miles=800.0,
+            selected_stops=stops,
+            legs=[],
+            fuel_economy_mpg=10.0,
+            initial_tank_gallons=50.0,
+            reference_fuel_price=3.50,
+        )
+        self.assertEqual(result['total_fuel_consumed_gallons'], 80.0)
+        self.assertEqual(result['fuel_purchased_during_trip_gallons'], 40.0)
+        self.assertEqual(result['cash_expenditure_at_pumps_usd'], 120.00)
+        self.assertEqual(result['destination_remaining_fuel_gallons'], 10.0)
+
+        inv = result['inventory_fuel_accounting']
+        self.assertEqual(inv['departure_fuel_valuation_usd'], 175.00)
+        self.assertEqual(inv['purchased_fuel_burned_cost_usd'], 90.00)
+        self.assertEqual(inv['economic_cost_of_consumed_fuel_usd'], 265.00)
+        self.assertEqual(inv['destination_inventory_valuation_usd'], 30.00)
+
+        total_input_value = inv['departure_fuel_valuation_usd'] + result['cash_expenditure_at_pumps_usd']
+        total_accounted_value = inv['economic_cost_of_consumed_fuel_usd'] + inv['destination_inventory_valuation_usd']
+        self.assertEqual(total_input_value, total_accounted_value)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -59,41 +59,44 @@ The raw dataset contains no latitude or longitude fields. To avoid slow, rate-li
 
 ## Fuel Accounting & Economic Model
 
-A vehicle driving $D$ miles at 10 MPG consumes exactly $D / 10$ gallons of fuel. The accounting distinguishes out-of-pocket cash from economic fuel consumption:
+A vehicle driving $D$ miles at 10 MPG consumes exactly $D / 10$ gallons of fuel. The accounting distinguishes out-of-pocket cash from economic fuel consumption and inventory:
 
 1. **Total Fuel Consumed:**
-   $$\text{fuel\_consumed\_gallons} = \frac{\text{total\_distance\_miles}}{10}$$
+   $$\text{total\_fuel\_consumed\_gallons} = \frac{\text{total\_distance\_miles}}{10}$$
 2. **Fuel Purchased During Trip:**
    $$\text{fuel\_purchased\_during\_trip\_gallons} = \sum_{i=1}^k \text{gallons\_purchased}_i$$
 3. **Cash Expenditure at Pumps:**
-   $$\text{cash\_expenditure\_at\_pumps\_usd} = \sum_{i=1}^k (\text{gallons\_purchased}_i \times \text{price}_i)$$
-4. **Estimated Total Fuel Cost of Trip:**
-   Reflects the total economic value of fuel burned. For trips under 500 miles where no stop is made, cash expenditure is \$0.00, but fuel was consumed from the departure tank:
-   $$\text{estimated\_total\_fuel\_cost\_usd} = \text{cash\_expenditure} + (\text{fuel\_consumed} - \text{fuel\_purchased}) \times P_{\text{reference}}$$
-   where $P_{\text{reference}}$ is the benchmark fuel price along the route corridor.
-5. **Tank State Tracking:**
-   Tracks starting fuel (50.0 gal / full tank) and remaining fuel level at the destination.
+   $$\text{total\_cash\_expenditure\_at\_pumps\_usd} = \sum_{i=1}^k (\text{gallons\_purchased}_i \times \text{price}_i)$$
+4. **Destination Remaining Fuel Inventory:**
+   $$\text{destination\_remaining\_fuel\_gallons} = \text{starting\_tank} + \text{fuel\_purchased} - \text{fuel\_consumed}$$
+   Strictly reconciled without artificial clamping: non-negative fuel and tank capacity constraints are mathematically enforced.
+5. **Economic Cost of Fuel Consumed (FIFO Inventory Valuation):**
+   Reflects the actual monetary value of fuel burned during this trip:
+   - Departure fuel burned (up to starting tank) is valued at corridor benchmark reference price $P_{\text{reference}}$.
+   - Remaining fuel burned is drawn sequentially from intermediate pump purchases.
+   - Any fuel purchased but remaining in the tank at destination is treated as ending asset inventory, guaranteeing:
+   $$\text{Total Input (Departure Valuation + Cash Spent)} = \text{Economic Cost of Burned Fuel} + \text{Ending Inventory Value}$$
 
 ---
 
 ## Refueling Optimization Algorithm
 
-### Algorithm Overview
-The optimizer solves the single-vehicle refueling problem using **Shortest-Path Dynamic Programming over a Directed Acyclic Graph (DAG)**:
+### Continuous-State Linear Programming (HiGHS Solver)
+The optimizer formulates the single-vehicle continuous-tank refueling problem as a **Bounded Linear Program** solved via the high-performance C++ `HiGHS` solver in SciPy:
 
 1. **Candidate Corridor Filtering:** Extracts truck stops within 10 miles of the route polyline using bounding-box spatial indexing and Haversine projection, computing each station's highway mile marker.
-2. **DAG Construction:**
-   - **Node 0:** Origin (mile 0.0, departure with full 50-gallon tank).
-   - **Nodes $1 \dots M$:** Candidate truck stops ordered strictly by mile marker $d_1 < d_2 < \dots < d_M$.
-   - **Node $M+1$:** Destination (mile $D$).
-3. **Feasible Edges:** A directed edge $u \to v$ exists if and only if $0 < d_v - d_u \le 500.0\text{ miles}$.
-4. **Edge Weight:**
-   - For $u = 0$ (Origin): Cash cost is \$0.00 (fuel already in tank).
-   - For $u > 0$ (Station): $\text{weight}(u \to v) = \frac{d_v - d_u}{10} \times \text{Price}(u)$.
-5. **Backward Induction:**
-   $$DP(i) = \min_{j: d_j - d_i \le 500} \left( \text{weight}(i \to j) + DP(j) \right)$$
-   $$DP(\text{Destination}) = 0.0$$
-6. **Feasibility Enforcement:** If $DP(0) = \infty$, a gap between consecutive reachable stations exceeds 500 miles. The system returns an explicit `422 Unprocessable Entity` error detailing the exact gap.
+2. **Decision Variables:**
+   $b_0, b_1, \dots, b_{M-1} \ge 0$, where $b_i$ represents the continuous gallons purchased at candidate station $i$.
+3. **Objective:**
+   $$\min \sum_{i=0}^{M-1} (\text{price}_i \times b_i)$$
+4. **Physics & Tank Constraints:**
+   - **Non-negative Fuel Constraint:** At every point along the route (arrival at station $i+1$ and destination), cumulative fuel added must cover cumulative distance burned:
+     $$\text{Initial Fuel} + \sum_{k=0}^i b_k - \frac{\text{mile}_{i+1}}{\text{MPG}} \ge 0$$
+   - **Tank Capacity Constraint:** Immediately after purchase at station $i$, fuel cannot exceed the 50-gallon tank capacity:
+     $$\text{Initial Fuel} + \sum_{k=0}^i b_k - \frac{\text{mile}_i}{\text{MPG}} \le 50.0$$
+5. **Full-Precision Validation & Quantization Re-Simulation:**
+   The full-precision solution is verified first, quantized to pump precision (2 decimals), and re-simulated without clamping. Any physical deficit or capacity violation exceeds tolerance triggers an immediate `InfeasibleRouteError`.
+6. **Feasibility Enforcement:** If consecutive fueling opportunities exceed 500 miles or departure fuel cannot reach the first station, the API returns `422 Unprocessable Entity` specifying the exact gap.
 
 ---
 
@@ -308,15 +311,15 @@ python manage.py runserver
 
 ## Automated Test Suite
 
-The test suite contains **29 unit and integration tests** verifying all requirements without depending on live network services:
+The test suite contains **35 unit and integration tests** verifying all requirements without depending on live network services:
 
 ```bash
 python manage.py test tests
 ```
 
 ### Test Coverage Highlights:
-- **`tests/test_optimizer.py`:** Short routes (<500 mi), medium routes (800 mi), long routes (1,400 mi), cheapest-station preference, 500-mile gap infeasibility, empty candidate dataset.
-- **`tests/test_accounting.py`:** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, remaining tank level validation.
+- **`tests/test_optimizer.py`:** Short routes (<500 mi), medium routes (800 mi), long routes (1,400 mi), capacity fill-up trade-offs ($125 vs $175 bare-minimum), global vs local coordination ($85 vs $129 trap), closed-form cash verification ($160 exact), input validation parameter bounds, starting fuel below capacity (20 gal), 500-mile gap infeasibility, empty candidate dataset, and full-precision non-clamping physical conservation.
+- **`tests/test_accounting.py`:** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, strict non-clamping negative balance rejection, and FIFO fuel inventory valuation with destination ending asset reconciliation.
 - **`tests/test_corridor.py`:** Haversine distance accuracy, station filtering within 10-mile radius, exclusion of distant stations, mile marker ordering.
 - **`tests/test_geocoding.py`:** Raw coordinate parsing, US boundary enforcement, local cache resolution, mocked Nominatim fallback and timeout handling.
 - **`tests/test_fuel_data.py`:** Highway and exit parsing regex, Canadian province filtering.

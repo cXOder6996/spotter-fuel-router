@@ -1,6 +1,10 @@
 import unittest
 from types import SimpleNamespace
-from api.services.optimizer import optimize_fuel_stops, InfeasibleRouteError
+from api.services.optimizer import (
+    optimize_fuel_stops,
+    validate_optimizer_inputs,
+    InfeasibleRouteError,
+)
 
 
 class FuelOptimizerTests(unittest.TestCase):
@@ -35,7 +39,7 @@ class FuelOptimizerTests(unittest.TestCase):
         }
 
     def test_short_trip_requires_no_stops(self):
-        """Trips under 500 miles require 0 intermediate fuel stops and depart on starting fuel."""
+        """Trips under starting fuel range require 0 intermediate fuel stops."""
         result = optimize_fuel_stops(
             total_distance_miles=240.0,
             candidate_stops=[self.make_mock_station(1, "Station A", 100.0, 3.10)],
@@ -57,9 +61,6 @@ class FuelOptimizerTests(unittest.TestCase):
         When arriving at an expensive station with ample leftover fuel to reach a cheaper
         station downstream, the optimizer purchases 0 gallons and drives through.
         """
-        # Origin (50 gal) -> Station A (mile 200, $3.50) -> Station B (mile 320, $2.80) -> Dest (mile 700)
-        # Leg 0->200 consumes 20 gal. Arrival fuel at A = 30 gal.
-        # Leg A->B is 120 mi (needs 12 gal). Since 30 gal >= 12 gal, 0 fuel is purchased at Station A!
         candidates = [
             self.make_mock_station(1, "Expensive Intermediate A", 200.0, 3.50),
             self.make_mock_station(2, "Cheap Reachable B", 320.0, 2.80),
@@ -73,91 +74,146 @@ class FuelOptimizerTests(unittest.TestCase):
         )
         self.assertTrue(result['is_feasible'])
         selected_ids = [s['station'].opis_id for s in result['selected_stops']]
-        # Must only buy at Station B (id 2) and skip buying at Station A (id 1)
         self.assertNotIn(1, selected_ids)
         self.assertIn(2, selected_ids)
 
         stop_b = result['selected_stops'][0]
         self.assertEqual(stop_b['station'].opis_id, 2)
-        # At mile 320, truck arrived with 50 - 32 = 18.0 gal.
-        # Distance to destination is 700 - 320 = 380 mi (needs 38.0 gal).
-        # Therefore, truck purchases 38.0 - 18.0 = 20.0 gallons at Station B.
         self.assertEqual(stop_b['gallons_purchased'], 20.0)
         self.assertEqual(stop_b['cost_usd'], round(20.0 * 2.80, 2))
 
     def test_cheap_station_fills_up_capacity_over_bare_minimum(self):
         """
-        At a significantly cheaper station, topping off the tank to capacity (50 gal)
-        is superior to buying only enough for the immediate leg, avoiding purchases at an expensive stop.
+        Genuinely tests the trade-off between topping off to capacity at a cheap station
+        vs. buying only the bare minimum for the immediate leg before an expensive station.
+
+        Setup:
+          - Trip distance: 1,000 miles.
+          - Initial fuel: 50 gal.
+          - Station 1 at mile 400 (price $2.00/gal - cheap).
+          - Station 2 at mile 700 (price $4.50/gal - expensive).
+          - Destination at mile 1,000.
+          - Since Station 1 to Destination is 600 miles (> 500 max range), stopping at Station 2 is mandatory!
+
+        Alternative Strategy (Bare Minimum):
+          - At Station 1 (400 mi), arrives with 10 gal. Buys 20 gal to reach Station 2 (300 mi = 30 gal).
+            Cost = 20 * $2.00 = $40.00.
+          - At Station 2 (700 mi), arrives with 0 gal. Must buy 30 gal to reach Destination (300 mi = 30 gal).
+            Cost = 30 * $4.50 = $135.00.
+          - Total cash = $40.00 + $135.00 = $175.00.
+
+        Optimal Strategy (Fill up to 50 gal capacity at Station 1):
+          - At Station 1, buys 40 gal @ $2.00 = $80.00 -> leaves with 50 gal.
+          - Drives 300 mi to Station 2, arrives with 50 - 30 = 20 gal!
+          - At Station 2, only needs 30 - 20 = 10 gal to finish the trip!
+            Cost = 10 * $4.50 = $45.00.
+          - Total cash = $80.00 + $45.00 = $125.00.
+          - Savings = $50.00!
         """
-        # Origin (50 gal).
-        # Station 1 at mile 400 (price $2.00/gal - cheap).
-        # Station 2 at mile 600 (price $4.50/gal - expensive).
-        # Destination at mile 900.
-        #
-        # If buying bare minimum:
-        # Arrives at Station 1 with 10 gal. Buys 10 gal ($20) to reach Station 2 (needs 20 gal).
-        # Arrives at Station 2 with 0 gal. Must buy 30 gal @ $4.50 = $135 to reach Dest. Total = $155.
-        #
-        # If filling up to capacity at Station 1:
-        # Arrives at Station 1 with 10 gal. Buys 40 gal ($80) -> departure fuel 50 gal.
-        # Drives to Station 2 (200 mi, burns 20 gal) -> arrives at Station 2 with 30 gal!
-        # Distance to Dest is 300 mi (needs 30 gal) -> buys 0 gal at Station 2!
-        # Total cash = $80.00 (saving $75.00!).
         candidates = [
             self.make_mock_station(1, "Cheap Fillup", 400.0, 2.00),
-            self.make_mock_station(2, "Expensive Trap", 600.0, 4.50),
+            self.make_mock_station(2, "Expensive Downstream", 700.0, 4.50),
         ]
         result = optimize_fuel_stops(
-            total_distance_miles=900.0,
+            total_distance_miles=1000.0,
             candidate_stops=candidates,
             max_range_miles=500.0,
             fuel_economy_mpg=10.0,
             initial_tank_gallons=50.0,
         )
         self.assertTrue(result['is_feasible'])
-        selected = result['selected_stops']
-        self.assertEqual(len(selected), 1)
-        self.assertEqual(selected[0]['station'].opis_id, 1)
-        self.assertEqual(selected[0]['gallons_purchased'], 40.0)
-        self.assertEqual(selected[0]['cost_usd'], 80.0)
+        stops = result['selected_stops']
+        self.assertEqual(len(stops), 2)
+
+        # Station 1: must fill to full (buy 40 gal)
+        self.assertEqual(stops[0]['station'].opis_id, 1)
+        self.assertEqual(stops[0]['gallons_purchased'], 40.0)
+        self.assertEqual(stops[0]['cost_usd'], 80.00)
+
+        # Station 2: only buy the remaining 10 gal
+        self.assertEqual(stops[1]['station'].opis_id, 2)
+        self.assertEqual(stops[1]['gallons_purchased'], 10.0)
+        self.assertEqual(stops[1]['cost_usd'], 45.00)
+
+        total_cash = sum(s['cost_usd'] for s in stops)
+        bare_minimum_cost = 175.00
+        self.assertEqual(total_cash, 125.00)
+        self.assertLess(total_cash, bare_minimum_cost)
+        self.assertEqual(bare_minimum_cost - total_cash, 50.00)
 
     def test_locally_cheap_choice_avoided_for_globally_cheaper_plan(self):
         """
-        A locally cheaper station that prevents reaching a far-off bargain (or forces an
-        expensive emergency stop) is bypassed in favor of a globally optimal refueling plan.
+        Tests that the optimizer coordinates fuel purchases across stations to minimize
+        total cash expenditure, verified against two independent feasible alternative plans:
+
+        Setup:
+          - Trip distance: 800 miles at 10 MPG (consumes 80.0 gal).
+          - Starting fuel: 50.0 gal (deficit: 30.0 gal to buy).
+          - Station 1 at mile 200 (price $2.80/gal - early cheap station).
+          - Station 2 at mile 450 (price $2.90/gal - reachable bridge station).
+          - Station 3 at mile 600 (price $4.50/gal - expensive trap station).
+          - Destination at mile 800.
+
+        Feasible Alternative Plan 1 (Myopic local greedy - fill up at Station 1, trapped into Station 3):
+          - Fills up with 30 gal @ $2.80 = $84.00 at Station 1.
+          - Max reach from Station 1 on full tank is mile 700 (cannot reach mile 800 destination).
+          - Forced to refuel at Station 3 (mile 600): arrives with 10 gal, buys 10 gal @ $4.50 = $45.00.
+          - Total cash for Plan 1 = $84.00 + $45.00 = $129.00.
+
+        Feasible Alternative Plan 2 (Single-stop strategy - skip Station 1, refuel only at Station 2):
+          - Arrives at Station 2 (mile 450) with 5 gal.
+          - Buys 30 gal @ $2.90 = $87.00. Reaches destination directly.
+          - Total cash for Plan 2 = $87.00.
+
+        Globally Optimal LP Plan:
+          - Buys 20.0 gal @ $2.80 = $56.00 at Station 1 (leaving with 50.0 gal full tank).
+          - Arrives at Station 2 with 25.0 gal. Buys 10.0 gal @ $2.90 = $29.00 (leaving with 35.0 gal).
+          - Reaches Destination directly without stopping at Station 3!
+          - Total cash for Globally Optimal Plan = $56.00 + $29.00 = $85.00.
+          - Strictly cheaper than Alternative Plan 1 ($129.00) and Alternative Plan 2 ($87.00).
         """
-        # Origin (50 gal).
-        # Station A at mile 300 ($3.00) - locally cheaper than B.
-        # Station B at mile 450 ($3.20).
-        # Station C at mile 850 ($2.50) - super cheap downstream.
-        # Emergency D at mile 600 ($5.50) - needed if stopping only at A because 850-300=550 > 500 max range.
-        # Destination at mile 950.
         candidates = [
-            self.make_mock_station(1, "Locally Cheap A", 300.0, 3.00),
-            self.make_mock_station(2, "Reachable Bridge B", 450.0, 3.20),
-            self.make_mock_station(3, "Emergency D", 600.0, 5.50),
-            self.make_mock_station(4, "Deep Bargain C", 850.0, 2.50),
+            self.make_mock_station(1, "Locally Cheap Early A", 200.0, 2.80),
+            self.make_mock_station(2, "Slightly Higher Reachable B", 450.0, 2.90),
+            self.make_mock_station(3, "Expensive Trap C", 600.0, 4.50),
         ]
         result = optimize_fuel_stops(
-            total_distance_miles=950.0,
+            total_distance_miles=800.0,
             candidate_stops=candidates,
             max_range_miles=500.0,
             fuel_economy_mpg=10.0,
             initial_tank_gallons=50.0,
         )
         self.assertTrue(result['is_feasible'])
-        stop_ids = [s['station'].opis_id for s in result['selected_stops']]
-        # The algorithm must not get stuck into buying at Emergency D
+        stops = result['selected_stops']
+        stop_ids = [s['station'].opis_id for s in stops]
+
+        # Station 3 (expensive trap) must be completely bypassed
         self.assertNotIn(3, stop_ids)
-        # Deep Bargain C must be utilized
-        self.assertIn(4, stop_ids)
+        self.assertEqual(stop_ids, [1, 2])
+
+        # Verify exact purchase amounts
+        self.assertEqual(stops[0]['gallons_purchased'], 20.0)
+        self.assertEqual(stops[0]['cost_usd'], 56.00)
+
+        self.assertEqual(stops[1]['gallons_purchased'], 10.0)
+        self.assertEqual(stops[1]['cost_usd'], 29.00)
+
+        total_cash = sum(s['cost_usd'] for s in stops)
+        self.assertEqual(total_cash, 85.00)
+
+        alternative_plan_1_cost = 129.00
+        alternative_plan_2_cost = 87.00
+
+        self.assertLess(total_cash, alternative_plan_1_cost)
+        self.assertLess(total_cash, alternative_plan_2_cost)
+        self.assertEqual(alternative_plan_2_cost - total_cash, 2.00)
+        self.assertEqual(alternative_plan_1_cost - total_cash, 44.00)
 
     def test_infeasible_route_gap_exceeds_max_range(self):
         """Raises InfeasibleRouteError when distance between consecutive opportunities > 500 miles."""
         candidates = [
             self.make_mock_station(1, "Stop 1", 200.0, 3.00),
-            # Gap from 200 to 750 is 550 miles (> 500 max range)
             self.make_mock_station(2, "Stop 2", 750.0, 3.00),
         ]
         with self.assertRaises(InfeasibleRouteError) as ctx:
@@ -170,7 +226,7 @@ class FuelOptimizerTests(unittest.TestCase):
 
     def test_fuel_balance_and_tank_capacity_conservation_after_every_leg(self):
         """
-        Validates that after every leg:
+        Validates fuel balance and tank constraints across all legs without clamping:
           1. 0 <= arrival_fuel <= 50.0 gal.
           2. 0 <= departure_fuel <= 50.0 gal.
           3. Leg distance <= 500.0 miles.
@@ -227,13 +283,6 @@ class FuelOptimizerTests(unittest.TestCase):
           - Initial fuel: 50.0 gal covers 500 miles -> 50.0 gal deficit.
           - Station 1 at mile 400 ($3.50/gal).
           - Station 2 at mile 700 ($3.00/gal).
-          - Destination at mile 1000.
-          - At Station 1 (400 mi), arrival fuel = 10.0 gal.
-            Distance to Station 2 (700 mi) is 300 mi (needs 30.0 gal).
-            Because Station 2 is cheaper ($3.00 < $3.50), truck buys only 30.0 - 10.0 = 20.0 gal at Station 1.
-          - At Station 2 (700 mi), arrival fuel = 0.0 gal.
-            Distance to Destination is 300 mi (needs 30.0 gal).
-            Truck buys 30.0 gal at Station 2.
           - Expected cash cost: 20.0 * 3.50 + 30.0 * 3.00 = $70.00 + $90.00 = $160.00.
         """
         candidates = [
@@ -270,6 +319,76 @@ class FuelOptimizerTests(unittest.TestCase):
                 candidate_stops=[],
                 max_range_miles=500.0,
             )
+
+    def test_invalid_optimizer_input_parameters(self):
+        """Verifies that invalid input parameter combinations raise ValueError."""
+        mock_cand = [self.make_mock_station(1, "Stop 1", 200.0, 3.00)]
+
+        # Negative distance
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=-100.0, candidate_stops=mock_cand)
+
+        # Non-positive MPG
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=mock_cand, fuel_economy_mpg=0.0)
+
+        # Non-positive tank capacity
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=mock_cand, tank_capacity_gallons=-50.0)
+
+        # Non-positive max range
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=mock_cand, max_range_miles=0.0)
+
+        # Negative starting fuel
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=mock_cand, initial_tank_gallons=-10.0)
+
+        # Starting fuel exceeds tank capacity
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(
+                total_distance_miles=500.0,
+                candidate_stops=mock_cand,
+                tank_capacity_gallons=50.0,
+                initial_tank_gallons=60.0,
+            )
+
+        # Max range exceeds tank capacity * MPG physics
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(
+                total_distance_miles=500.0,
+                candidate_stops=mock_cand,
+                tank_capacity_gallons=50.0,
+                fuel_economy_mpg=10.0,
+                max_range_miles=600.0,  # 600 > 50 * 10
+            )
+
+        # Non-positive station price
+        bad_price_station = self.make_mock_station(2, "Free Station", 250.0, 0.0)
+        with self.assertRaises(ValueError):
+            optimize_fuel_stops(total_distance_miles=500.0, candidate_stops=[bad_price_station])
+
+    def test_starting_fuel_below_capacity(self):
+        """
+        Tests that starting with less than a full tank (e.g. 20 gal = 200 mi range)
+        properly constrains the initial reach and forces an early refueling stop.
+        """
+        candidates = [
+            self.make_mock_station(1, "Early Stop", 150.0, 3.20),
+            self.make_mock_station(2, "Late Stop", 350.0, 2.90),
+        ]
+        # Trip of 600 miles starting with only 20 gallons (cannot reach Late Stop at 350 mi)
+        result = optimize_fuel_stops(
+            total_distance_miles=600.0,
+            candidate_stops=candidates,
+            max_range_miles=500.0,
+            fuel_economy_mpg=10.0,
+            initial_tank_gallons=20.0,  # 200-mile initial range
+        )
+        self.assertTrue(result['is_feasible'])
+        stop_ids = [s['station'].opis_id for s in result['selected_stops']]
+        # Must refuel at Early Stop (150 mi) before running out of the 20 gal (200 mi range)
+        self.assertIn(1, stop_ids)
 
 
 if __name__ == '__main__':
