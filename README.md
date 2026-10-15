@@ -1,4 +1,4 @@
-# Spotter — Fuel Route Optimizer API
+# Spotter -- Fuel Route Optimizer API
 
 A high-performance, deterministic Django REST API that calculates driving routes across the United States, identifies cost-effective refueling stops along highway corridors, strictly enforces a 500-mile vehicle range constraint, and computes comprehensive fuel consumption and financial accounting at 10 miles per gallon.
 
