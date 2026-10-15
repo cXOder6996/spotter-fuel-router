@@ -311,19 +311,19 @@ python manage.py runserver
 
 ## Automated Test Suite
 
-The test suite contains **35 unit and integration tests** verifying all requirements without depending on live network services:
+The test suite contains **40 unit and integration tests** verifying all requirements without depending on live network services:
 
 ```bash
 python manage.py test tests
 ```
 
 ### Test Coverage Highlights:
-- **`tests/test_optimizer.py`:** Short routes (<500 mi), medium routes (800 mi), long routes (1,400 mi), capacity fill-up trade-offs ($125 vs $175 bare-minimum), global vs local coordination ($85 vs $129 trap), closed-form cash verification ($160 exact), input validation parameter bounds, starting fuel below capacity (20 gal), 500-mile gap infeasibility, empty candidate dataset, and full-precision non-clamping physical conservation.
-- **`tests/test_accounting.py`:** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, strict non-clamping negative balance rejection, and FIFO fuel inventory valuation with destination ending asset reconciliation.
+- **`tests/test_optimizer.py`:** Short routes (<500 mi), medium routes (800 mi), long routes (1,400 mi), capacity fill-up trade-offs ($125 vs $175 bare-minimum), global vs local coordination ($85 vs $129 trap), closed-form cash verification ($160 exact), input validation parameter bounds, non-finite input rejection (`NaN`/`inf`), starting fuel below capacity (20 gal), 500-mile gap infeasibility, empty candidate dataset, full-precision non-clamping physical conservation, and backward-only rounding deficit correction strictly at prior reachable stops with headroom.
+- **`tests/test_accounting.py`:** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, strict non-clamping negative balance rejection, FIFO fuel inventory valuation with destination ending asset reconciliation, and exact mathematical assertions for the inventory conservation equation across short and multi-stop trips under both default ($3.50) and custom reference prices.
 - **`tests/test_corridor.py`:** Haversine distance accuracy, station filtering within 10-mile radius, exclusion of distant stations, mile marker ordering.
 - **`tests/test_geocoding.py`:** Raw coordinate parsing, US boundary enforcement, local cache resolution, mocked Nominatim fallback and timeout handling.
 - **`tests/test_fuel_data.py`:** Highway and exit parsing regex, Canadian province filtering.
-- **`tests/test_api.py`:** Successful POST requests, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, and interactive map HTML rendering.
+- **`tests/test_api.py`:** Successful POST requests, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, custom reference fuel price requests, end-to-end API inventory conservation assertions, and interactive map HTML rendering.
 
 ---
 
@@ -378,5 +378,5 @@ Use this structured outline when recording your submission video:
   - `api/services/accounting.py`: Explain the separation of fuel consumed vs. fuel purchased and FIFO inventory valuation.
 
 ### 5. Conclusion (4:45 – 5:00)
-- Highlight the automated test suite: *35 comprehensive unit and integration tests passing in 0.11 seconds*.
+- Highlight the automated test suite: *40 comprehensive unit and integration tests passing in ~0.12 seconds*.
 - Conclude: *Thank you for your time, and I look forward to discussing the architecture further.*

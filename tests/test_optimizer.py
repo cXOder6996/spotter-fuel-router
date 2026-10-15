@@ -412,6 +412,49 @@ class FuelOptimizerTests(unittest.TestCase):
         # Must refuel at Early Stop (150 mi) before running out of the 20 gal (200 mi range)
         self.assertIn(1, stop_ids)
 
+    def test_rounding_deficit_corrected_strictly_at_prior_reachable_stop_with_headroom(self):
+        """
+        Regression test: When LP fractional purchases (e.g. 6.819 gal, 11.678 gal)
+        are quantized to 2 decimal places, rounding down could produce a pre-arrival
+        deficit (e.g. -0.0010 gal) at a subsequent stop.
+        Verifies:
+          1. The deficit is corrected strictly at an earlier reachable stop with spare headroom.
+          2. The plan is re-simulated from origin after adjustment.
+          3. Departure fuel never exceeds tank capacity (<= 50.0 gal) at any station.
+          4. Arrival fuel is nonnegative on every leg and at destination.
+        """
+        candidates = [
+            self.make_mock_station(1, "Louisville Stop", 296.48, 2.9057),
+            self.make_mock_station(2, "Chattanooga Stop", 568.19, 2.7857),
+        ]
+        result = optimize_fuel_stops(
+            total_distance_miles=684.97,
+            candidate_stops=candidates,
+            max_range_miles=500.0,
+            fuel_economy_mpg=10.0,
+            tank_capacity_gallons=50.0,
+            initial_tank_gallons=50.0,
+        )
+        self.assertTrue(result['is_feasible'])
+        self.assertEqual(len(result['selected_stops']), 2)
+
+        stop1 = result['selected_stops'][0]
+        stop2 = result['selected_stops'][1]
+
+        # Stop 1 must receive the backward-corrected purchase (6.83 gal instead of 6.82 gal)
+        self.assertEqual(stop1['gallons_purchased'], 6.83)
+        self.assertLessEqual(stop1['departure_fuel_gallons'], 50.0)
+        self.assertGreaterEqual(stop1['arrival_fuel_gallons'], 0.0)
+
+        # Stop 2 arrives with non-negative fuel due to earlier correction
+        self.assertEqual(stop2['gallons_purchased'], 11.68)
+        self.assertLessEqual(stop2['departure_fuel_gallons'], 50.0)
+        self.assertGreaterEqual(stop2['arrival_fuel_gallons'], 0.0)
+
+        # Destination leg arrives with positive fuel
+        final_leg = result['legs'][-1]
+        self.assertGreaterEqual(final_leg['arrival_fuel_gallons'], 0.0)
+
 
 if __name__ == '__main__':
     unittest.main()

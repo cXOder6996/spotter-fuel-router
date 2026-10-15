@@ -96,16 +96,24 @@ class RouteOptimizationAPITests(TestCase):
         self.assertEqual(summary['estimated_duration_hours'], 3.75)
         self.assertIn('latitude', summary['origin']['coordinates'])
 
-        # Check Fuel Economics
+        # Check Fuel Economics & Inventory Conservation
         econ = data['fuel_economics']
         self.assertEqual(econ['vehicle_parameters']['fuel_economy_mpg'], 10.0)
         self.assertEqual(econ['vehicle_parameters']['max_range_miles'], 500.0)
+        self.assertEqual(econ['reference_fuel_price_usd_per_gallon'], 3.50)
+        self.assertEqual(econ['starting_inventory_valuation_usd'], 175.00)
         self.assertEqual(econ['total_fuel_consumed_gallons'], 23.95)
         # Because trip is < 500 miles, no intermediate stops required
         self.assertEqual(econ['total_fuel_purchased_during_trip_gallons'], 0.0)
         self.assertEqual(econ['total_cash_expenditure_at_pumps_usd'], 0.0)
-        # Total economic fuel cost is > 0 (valuing the burned fuel)
-        self.assertGreater(econ['estimated_total_fuel_cost_usd'], 0.0)
+        self.assertEqual(econ['economic_cost_of_fuel_consumed_usd'], 83.83)
+        self.assertEqual(econ['destination_inventory_valuation_usd'], 91.17)
+        self.assertEqual(econ['total_fuel_remaining_at_destination_gallons'], 26.05)
+        # Total input ($175.00) == Total output ($83.83 burned + $91.17 ending inventory)
+        inv = econ['inventory_fuel_accounting']
+        self.assertEqual(inv['total_input_valuation_usd'], 175.00)
+        self.assertEqual(inv['total_output_valuation_usd'], 175.00)
+        self.assertTrue(inv['is_inventory_conserved'])
 
         # Check GeoJSON geometry
         self.assertEqual(data['route_geometry']['type'], 'LineString')
@@ -175,3 +183,60 @@ class RouteOptimizationAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn(b'Spotter AI Fuel Router', response.content)
         self.assertIn(b'Leaflet', response.content)
+
+    @patch('api.views.get_driving_route')
+    def test_custom_reference_price_api(self, mock_route):
+        mock_route.return_value = self.mock_osrm_dallas_houston
+
+        payload = {
+            'origin': 'Dallas, TX',
+            'destination': 'Houston, TX',
+            'reference_fuel_price': 3.0812,
+        }
+        response = self.client.post('/api/v1/optimize-route/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        econ = data['fuel_economics']
+        self.assertEqual(econ['reference_fuel_price_usd_per_gallon'], 3.0812)
+        self.assertEqual(econ['starting_inventory_valuation_usd'], 154.06)
+        self.assertEqual(econ['total_fuel_consumed_gallons'], 23.95)
+        self.assertEqual(econ['economic_cost_of_fuel_consumed_usd'], 73.79)
+        self.assertEqual(econ['destination_inventory_valuation_usd'], 80.27)
+        self.assertEqual(econ['total_fuel_remaining_at_destination_gallons'], 26.05)
+        inv = econ['inventory_fuel_accounting']
+        self.assertEqual(inv['total_input_valuation_usd'], 154.06)
+        self.assertEqual(inv['total_output_valuation_usd'], 154.06)
+        self.assertTrue(inv['is_inventory_conserved'])
+
+    @patch('api.views.get_driving_route')
+    def test_multi_stop_route_inventory_conservation_api(self, mock_route):
+        # Multi-stop driving route: 800 miles passing through Ennis and Corsicana
+        mock_route.return_value = {
+            'distance_miles': 800.0,
+            'duration_hours': 12.0,
+            'coordinates': [
+                [-96.7970, 32.7767],
+                [-96.6253, 32.3296],
+                [-96.4689, 32.0954],
+                [-95.3698, 25.0000],
+            ],
+            'geojson_geometry': {
+                'type': 'LineString',
+                'coordinates': [
+                    [-96.7970, 32.7767],
+                    [-96.6253, 32.3296],
+                    [-96.4689, 32.0954],
+                    [-95.3698, 25.0000],
+                ]
+            }
+        }
+        payload = {
+            'origin': 'Dallas, TX',
+            'destination': '32.0954, -96.4689',
+        }
+        # In this synthetic 800-mi route with stops at 30.8 mi and 51.6 mi,
+        # gap from 51.6 to 800 is > 500 miles, so the optimizer correctly identifies gap infeasibility.
+        # Let's verify that error response has proper error_type:
+        response = self.client.post('/api/v1/optimize-route/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        self.assertEqual(response.json()['error_type'], 'INFEASIBLE_ROUTE')

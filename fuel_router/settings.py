@@ -158,3 +158,6 @@ ROUTE_CORRIDOR_RADIUS_MILES = float(os.getenv('ROUTE_CORRIDOR_RADIUS_MILES', '10
 # Default Fuel Price Selection Policy for multi-record stations: 'min', 'avg', 'max'
 DEFAULT_FUEL_PRICE_POLICY = os.getenv('DEFAULT_FUEL_PRICE_POLICY', 'min')
 
+# Default Reference Fuel Price for Valuing Starting Inventory and Economic Burn ($/gal)
+DEFAULT_REFERENCE_FUEL_PRICE = float(os.getenv('DEFAULT_REFERENCE_FUEL_PRICE', '3.50'))
+

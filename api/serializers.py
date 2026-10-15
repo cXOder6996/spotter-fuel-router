@@ -38,6 +38,12 @@ class RouteOptimizationRequestSerializer(serializers.Serializer):
         max_value=50.0,
         help_text="Starting fuel in gallons at departure (default 50.0 gal / full tank)"
     )
+    reference_fuel_price = serializers.FloatField(
+        required=False,
+        default=None,
+        min_value=0.01,
+        help_text="Reference fuel price in USD/gal for valuing starting tank and consumed fuel (default from settings: 3.50)"
+    )
 
     def validate(self, attrs):
         origin = attrs.get('origin') or attrs.get('start')

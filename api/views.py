@@ -21,7 +21,8 @@ def run_route_optimization_pipeline(
     destination_str: str,
     corridor_radius: float = 10.0,
     price_policy: str = 'min',
-    starting_tank_gallons: float = 50.0
+    starting_tank_gallons: float = 50.0,
+    reference_fuel_price: float = None,
 ):
     """
     Executes the full pipeline:
@@ -47,10 +48,11 @@ def run_route_optimization_pipeline(
     # Step 3: Corridor candidate extraction
     candidate_stops = find_corridor_truck_stops(coords, corridor_radius_miles=corridor_radius)
 
-    # Benchmark fuel price for reference
-    ref_price = 3.50
-    if candidate_stops:
-        ref_price = round(sum(s['station'].primary_price for s in candidate_stops) / len(candidate_stops), 4)
+    # Reference fuel price for inventory valuation and economic burn
+    if reference_fuel_price is not None:
+        ref_price = float(reference_fuel_price)
+    else:
+        ref_price = getattr(settings, 'DEFAULT_REFERENCE_FUEL_PRICE', 3.50)
 
     # Step 4: Optimization (Continuous Linear Programming with HiGHS)
     opt_result = optimize_fuel_stops(
@@ -99,12 +101,15 @@ def run_route_optimization_pipeline(
                 'tank_capacity_gallons': getattr(settings, 'VEHICLE_TANK_CAPACITY_GALLONS', 50.0),
                 'initial_tank_state': f"{starting_tank_gallons:.1f} gal ({starting_tank_gallons * getattr(settings, 'VEHICLE_FUEL_ECONOMY_MPG', 10.0):.1f} mi range at departure)",
             },
+            'reference_fuel_price_usd_per_gallon': accounting['reference_fuel_price_usd_per_gallon'],
+            'starting_inventory_valuation_usd': accounting['starting_inventory_valuation_usd'],
             'total_fuel_consumed_gallons': accounting['total_fuel_consumed_gallons'],
             'total_fuel_purchased_during_trip_gallons': accounting['fuel_purchased_during_trip_gallons'],
             'total_cash_expenditure_at_pumps_usd': accounting['cash_expenditure_at_pumps_usd'],
             'economic_cost_of_fuel_consumed_usd': accounting['estimated_total_fuel_cost_usd'],
             'total_fuel_remaining_at_destination_gallons': accounting['total_fuel_remaining_at_destination_gallons'],
             'unused_starting_fuel_at_destination_gallons': accounting['inventory_fuel_accounting']['unused_starting_fuel_at_destination_gallons'],
+            'destination_inventory_valuation_usd': accounting['destination_inventory_valuation_usd'],
             'destination_remaining_fuel_gallons': accounting['destination_remaining_fuel_gallons'],
             'estimated_total_fuel_cost_usd': accounting['estimated_total_fuel_cost_usd'],
             'inventory_fuel_accounting': accounting.get('inventory_fuel_accounting', {}),
@@ -152,6 +157,7 @@ class OptimizeRouteView(APIView):
         radius = serializer.validated_data.get('corridor_radius_miles', 10.0)
         policy = serializer.validated_data.get('price_policy', 'min')
         starting_tank = serializer.validated_data.get('starting_tank_gallons', 50.0)
+        ref_price = serializer.validated_data.get('reference_fuel_price')
 
         try:
             result = run_route_optimization_pipeline(
@@ -159,7 +165,8 @@ class OptimizeRouteView(APIView):
                 destination,
                 corridor_radius=radius,
                 price_policy=policy,
-                starting_tank_gallons=starting_tank
+                starting_tank_gallons=starting_tank,
+                reference_fuel_price=ref_price,
             )
             return Response(result, status=status.HTTP_200_OK)
 

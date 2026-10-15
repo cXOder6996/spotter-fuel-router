@@ -133,6 +133,75 @@ class FuelAccountingTests(unittest.TestCase):
         total_accounted_value = inv['economic_cost_of_consumed_fuel_usd'] + inv['destination_inventory_valuation_usd']
         self.assertEqual(total_input_value, total_accounted_value)
 
+    def test_inventory_conservation_equation_short_route(self):
+        """
+        Asserts the fundamental inventory conservation equation on a short route:
+        Starting Inventory Valuation ($) + Pump Cash Spent ($)
+          == Economic Fuel Burned Cost ($) + Destination Inventory Valuation ($)
+        Under a $3.50/gal reference price for 50 gal starting tank ($175.00).
+        """
+        # 239.62 mile trip at 10 MPG consumes 23.96 gal.
+        # Starting with 50 gal full tank -> 26.04 gal remaining at destination.
+        result = calculate_fuel_accounting(
+            total_distance_miles=239.62,
+            selected_stops=[],
+            legs=[{'distance_miles': 239.62, 'gallons': 23.96, 'cost_usd': 0.0}],
+            fuel_economy_mpg=10.0,
+            initial_tank_gallons=50.0,
+            reference_fuel_price=3.50,
+        )
+        inv = result['inventory_fuel_accounting']
+        self.assertEqual(inv['reference_fuel_price_usd_per_gallon'], 3.50)
+        self.assertEqual(inv['starting_inventory_valuation_usd'], 175.00)
+        self.assertEqual(inv['departure_fuel_burned_gallons'], 23.96)
+        self.assertEqual(inv['departure_fuel_valuation_usd'], 83.86)
+        self.assertEqual(inv['unused_starting_fuel_at_destination_gallons'], 26.04)
+        self.assertEqual(inv['destination_inventory_valuation_usd'], 91.14)
+        self.assertEqual(result['cash_expenditure_at_pumps_usd'], 0.00)
+
+        # Total input = 175.00 + 0.00 = 175.00
+        # Total output = 83.86 + 91.14 = 175.00
+        self.assertEqual(inv['total_input_valuation_usd'], 175.00)
+        self.assertEqual(inv['total_output_valuation_usd'], 175.00)
+        self.assertTrue(inv['is_inventory_conserved'])
+
+    def test_inventory_conservation_equation_multi_stop_route(self):
+        """
+        Asserts the inventory conservation equation on a multi-stop route with purchases:
+        Starting Inventory Valuation ($) + Pump Cash Spent ($)
+          == Economic Fuel Burned Cost ($) + Destination Inventory Valuation ($)
+        """
+        # 685.0 mile trip at 10 MPG consumes 68.5 gal.
+        # Stop 1 buys 6.83 gal @ $2.9057 ($19.85)
+        # Stop 2 buys 11.68 gal @ $2.7857 ($32.54)
+        # Total purchases = 18.51 gal, Cash spent = $52.39.
+        # Reconciled destination fuel = 50.0 + 18.51 - 68.50 = 0.01 gal.
+        stops = [
+            self.make_mock_stop(1, "Stop 1", 296.48, 6.83, 2.9057),
+            self.make_mock_stop(2, "Stop 2", 568.19, 11.68, 2.7857),
+        ]
+        result = calculate_fuel_accounting(
+            total_distance_miles=684.97,
+            selected_stops=stops,
+            legs=[],
+            fuel_economy_mpg=10.0,
+            initial_tank_gallons=50.0,
+            reference_fuel_price=3.50,
+        )
+        inv = result['inventory_fuel_accounting']
+        self.assertEqual(inv['starting_inventory_valuation_usd'], 175.00)
+        self.assertEqual(result['cash_expenditure_at_pumps_usd'], 52.39)
+        self.assertEqual(inv['departure_fuel_burned_gallons'], 50.0)
+        self.assertEqual(inv['departure_fuel_valuation_usd'], 175.00)
+        self.assertEqual(inv['purchased_fuel_burned_gallons'], 18.50)
+        self.assertEqual(inv['total_fuel_remaining_at_destination_gallons'], 0.01)
+        self.assertEqual(inv['destination_inventory_valuation_usd'], 0.03)
+
+        # Conservation holds:
+        self.assertEqual(inv['total_input_valuation_usd'], 227.39)
+        self.assertEqual(inv['total_output_valuation_usd'], 227.39)
+        self.assertTrue(inv['is_inventory_conserved'])
+
 
 if __name__ == '__main__':
     unittest.main()
