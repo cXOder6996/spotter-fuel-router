@@ -42,7 +42,9 @@ staticfiles/
 .vscode/
 .idea/
 *.swp
-*.swo
+# Local Candidate Guides
+LOOM_GUIDE.md
+
 
 # Testing / Coverage
 .coverage

@@ -1,13 +1,13 @@
-# Spotter AI — Optimal Fuel Routing API
+# Spotter — Fuel Route Optimizer API
 
-A high-performance, deterministic Django REST API that calculates driving routes across the United States, identifies cost-effective refueling stops along highway corridors, enforces a strict 500-mile vehicle range constraint, and computes comprehensive fuel accounting (at 10 miles per gallon).
+A high-performance, deterministic Django REST API that calculates driving routes across the United States, identifies cost-effective refueling stops along highway corridors, strictly enforces a 500-mile vehicle range constraint, and computes comprehensive fuel consumption and financial accounting at 10 miles per gallon.
 
 Includes an interactive Leaflet.js route visualizer at `http://127.0.0.1:8000/map/`.
 
 ---
 
 ## Table of Contents
-1. [Core Features & Engineering Highlights](#core-features--engineering-highlights)
+1. [Core Features & Architecture](#core-features--architecture)
 2. [Data Analysis & Geographic Matching Strategy](#data-analysis--geographic-matching-strategy)
 3. [Fuel Accounting & Economic Model](#fuel-accounting--economic-model)
 4. [Refueling Optimization Algorithm](#refueling-optimization-algorithm)
@@ -15,15 +15,14 @@ Includes an interactive Leaflet.js route visualizer at `http://127.0.0.1:8000/ma
 6. [API Specification](#api-specification)
 7. [Automated Test Suite](#automated-test-suite)
 8. [Performance Benchmarks](#performance-benchmarks)
-9. [5-Minute Loom Walkthrough Script](#5-minute-loom-walkthrough-script)
 
 ---
 
-## Core Features & Engineering Highlights
+## Core Features & Architecture
 
-- **Continuous Linear Programming Optimization:** Formulates refueling as a **Continuous-State Bounded Linear Program** solved via SciPy's high-performance C++ `HiGHS` solver. Guarantees global minimum fuel expenditure while strictly tracking arrival and departure tank levels, enforcing the 50-gallon capacity constraint, and ensuring no driving leg exceeds the 500-mile vehicle range.
+- **Deterministic Optimization:** Formulates refueling as a **Shortest-Path Dynamic Programming (DAG)** problem over feasible driving legs. Mathematically guarantees global minimum fuel expenditure while strictly enforcing that every leg between consecutive stops (and origin/destination) is &le; 500 miles.
 - **Strict External Call Budget:** Consistently consumes **exactly 1 external routing API call** per unique route (via Open Source Routing Machine / OSRM) with in-memory caching. Resolves 99.8% of US cities locally without external geocoder calls.
-- **Rigorous Fuel Accounting:** Separates total fuel consumed by vehicle physics ($D / 10$), fuel purchased at intermediate stops, cash paid at pumps, and total economic trip cost (including departure tank fuel valuation).
+- **Rigorous Fuel Accounting:** Separates total fuel consumed by vehicle physics (`total_distance / 10`), fuel purchased at intermediate stops, cash paid at pumps, and total economic trip cost (accounting for departure tank valuation).
 - **Sub-Second to Low-Latency Performance:** Evaluates cross-country routes (2,800 miles) in ~3.6 seconds and regional routes (240–700 miles) in 1.1–1.5 seconds.
 - **Dual Interface:** Full REST API (`POST /api/v1/optimize-route/`) for programmatic integration alongside an interactive web map (`GET /map/`) with route polyline, origin/destination pins, and clickable fuel stop popups.
 
@@ -46,7 +45,7 @@ Inspection of the address fields revealed:
 
 ### 3. Duplicate Truckstop ID Analysis
 - **Unique OPIS IDs:** 6,738 unique IDs (678 IDs appear in multiple rows).
-- **Finding:** Every multi-row ID has an identical physical address and identical Rack ID. The variation is purely in `Retail Price` (e.g. ID 105 has 6 entries ranging from \$3.269 to \$3.429).
+- **Finding:** Every multi-row ID has an identical physical address and identical Rack ID. The variation is purely in `Retail Price` (e.g. ID 105 has 6 entries ranging from $3.269 to $3.429).
 - **Domain Rationale:** In OPIS petroleum industry data, multiple price reports for one terminal represent different diesel fuel grades/contracts (e.g., Ultra-Low Sulfur Diesel vs. B5/B20 Biodiesel blends, winterized additives, or cash vs. fleet payment tiers).
 - **Handling Policy:** The system stores the station's full price spectrum (`min_price`, `max_price`, `avg_price`, and all raw variant quotes). The active routing price defaults to `min_price` (cheapest available pump product), with complete transparency provided in the API response metadata.
 
@@ -59,44 +58,43 @@ The raw dataset contains no latitude or longitude fields. To avoid slow, rate-li
 
 ## Fuel Accounting & Economic Model
 
-A vehicle driving $D$ miles at 10 MPG consumes exactly $D / 10$ gallons of fuel. The accounting distinguishes out-of-pocket cash from economic fuel consumption and inventory:
+A vehicle driving `D` miles at 10 MPG consumes exactly `D / 10` gallons of fuel. The accounting model distinguishes out-of-pocket cash from economic fuel consumption:
 
-1. **Total Fuel Consumed:**
-   $$\text{total\_fuel\_consumed\_gallons} = \frac{\text{total\_distance\_miles}}{10}$$
-2. **Fuel Purchased During Trip:**
-   $$\text{fuel\_purchased\_during\_trip\_gallons} = \sum_{i=1}^k \text{gallons\_purchased}_i$$
-3. **Cash Expenditure at Pumps:**
-   $$\text{total\_cash\_expenditure\_at\_pumps\_usd} = \sum_{i=1}^k (\text{gallons\_purchased}_i \times \text{price}_i)$$
-4. **Destination Remaining Fuel Inventory:**
-   $$\text{destination\_remaining\_fuel\_gallons} = \text{starting\_tank} + \text{fuel\_purchased} - \text{fuel\_consumed}$$
-   Strictly reconciled without artificial clamping: non-negative fuel and tank capacity constraints are mathematically enforced.
-5. **Economic Cost of Fuel Consumed (FIFO Inventory Valuation):**
-   Reflects the actual monetary value of fuel burned during this trip:
-   - Departure fuel burned (up to starting tank) is valued at corridor benchmark reference price $P_{\text{reference}}$.
-   - Remaining fuel burned is drawn sequentially from intermediate pump purchases.
-   - Any fuel purchased but remaining in the tank at destination is treated as ending asset inventory, guaranteeing:
-   $$\text{Total Input (Departure Valuation + Cash Spent)} = \text{Economic Cost of Burned Fuel} + \text{Ending Inventory Value}$$
+- **Total Fuel Consumed:**
+  `total_fuel_consumed_gallons = total_distance_miles / 10.0`
+- **Fuel Purchased During Trip:**
+  `fuel_purchased_during_trip_gallons = sum(gallons_purchased_at_stops)`
+- **Cash Expenditure at Pumps:**
+  `cash_expenditure_at_pumps_usd = sum(gallons_purchased_i * price_per_gallon_i)`
+- **Estimated Total Fuel Cost of Trip:**
+  Reflects the full economic value of fuel burned. For trips under 500 miles where no stop is made, cash expenditure is $0.00, but fuel was consumed from the departure tank:
+  `estimated_total_fuel_cost_usd = cash_expenditure + (fuel_consumed - fuel_purchased) * reference_fuel_price`
+  where `reference_fuel_price` is the benchmark fuel price along the route corridor.
+- **Tank State Tracking:**
+  Tracks starting fuel (50.0 gal / full tank) and remaining fuel level at the destination:
+  `remaining_fuel_at_destination = starting_tank + fuel_purchased - fuel_consumed`
 
 ---
 
 ## Refueling Optimization Algorithm
 
-### Continuous-State Linear Programming (HiGHS Solver)
-The optimizer formulates the single-vehicle continuous-tank refueling problem as a **Bounded Linear Program** solved via the high-performance C++ `HiGHS` solver in SciPy:
+### Shortest-Path Dynamic Programming (DAG)
+The optimizer models the single-vehicle refueling problem as finding the shortest path through a **Directed Acyclic Graph (DAG) of Feasible Driving Legs**:
 
 1. **Candidate Corridor Filtering:** Extracts truck stops within 10 miles of the route polyline using bounding-box spatial indexing and Haversine projection, computing each station's highway mile marker.
-2. **Decision Variables:**
-   $b_0, b_1, \dots, b_{M-1} \ge 0$, where $b_i$ represents the continuous gallons purchased at candidate station $i$.
-3. **Objective:**
-   $$\min \sum_{i=0}^{M-1} (\text{price}_i \times b_i)$$
-4. **Physics & Tank Constraints:**
-   - **Non-negative Fuel Constraint:** At every point along the route (arrival at station $i+1$ and destination), cumulative fuel added must cover cumulative distance burned:
-     $$\text{Initial Fuel} + \sum_{k=0}^i b_k - \frac{\text{mile}_{i+1}}{\text{MPG}} \ge 0$$
-   - **Tank Capacity Constraint:** Immediately after purchase at station $i$, fuel cannot exceed the 50-gallon tank capacity:
-     $$\text{Initial Fuel} + \sum_{k=0}^i b_k - \frac{\text{mile}_i}{\text{MPG}} \le 50.0$$
-5. **Full-Precision Validation & Quantization Re-Simulation:**
-   The full-precision solution is verified first, quantized to pump precision (2 decimals), and re-simulated without clamping. Any physical deficit or capacity violation exceeds tolerance triggers an immediate `InfeasibleRouteError`.
-6. **Feasibility Enforcement:** If consecutive fueling opportunities exceed 500 miles or departure fuel cannot reach the first station, the API returns `422 Unprocessable Entity` specifying the exact gap.
+2. **DAG Construction:**
+   - **Node 0:** Origin (mile 0.0, departure with full 50-gallon tank).
+   - **Nodes 1 ... M:** Candidate truck stops ordered strictly by mile marker `d_1 < d_2 < ... < d_M`.
+   - **Node M+1:** Destination (mile `D`).
+3. **Feasible Edges:** A directed edge `u -> v` exists if and only if:
+   `0 < d_v - d_u <= 500.0 miles` (the vehicle's maximum driving range).
+4. **Edge Weight:**
+   - For `u = 0` (Origin): Cash cost is $0.00 (fuel already in tank at start).
+   - For `u > 0` (Station): `weight(u -> v) = ((d_v - d_u) / 10.0) * Price(u)`.
+5. **Backward Induction:**
+   `DP(i) = min_{j: d_j - d_i <= 500} [ weight(i -> j) + DP(j) ]`
+   `DP(Destination) = 0.0`
+6. **Feasibility Enforcement:** If `DP(0) = infinity`, a gap between consecutive reachable stations exceeds 500 miles. The system returns an explicit `422 Unprocessable Entity` error detailing the exact gap.
 
 ---
 
@@ -109,8 +107,8 @@ The optimizer formulates the single-vehicle continuous-tank refueling problem as
 ### 1. Clone & Set Up Environment
 ```bash
 # Clone the repository
-git clone <your-repo-url>
-cd "Backend 4 Spotter"
+git clone https://github.com/cXOder6996/spotter-fuel-router.git
+cd spotter-fuel-router
 
 # Create and activate virtual environment
 python -m venv .venv
@@ -292,7 +290,7 @@ python manage.py runserver
   "assumptions_and_limitations": {
     "vehicle_model": "Standard heavy truck with 500-mile max range and uniform 10 MPG fuel economy.",
     "starting_fuel_rule": "Vehicle is assumed to depart with a full 50-gallon tank. Cash expenditure covers fuel bought during the journey; estimated total fuel cost includes valuation of starting fuel consumed.",
-    "coordinate_precision": "Truck stops are mapped to city-corridor centroid coordinates derived from the US GNIS database with a 10-mile corridor radius buffer. Stations are not represented as exact pump GPS points.",
+    "coordinate_precision": "Truck stops are mapped to verified highway corridor coordinates derived from national geographic gazetteer and interstate junction reference. Stations are not represented as exact pump GPS points.",
     "fuel_pricing": "Default price selection policy 'min'. Multiple prices per terminal reflect reported fuel grade variants; station price ranges are documented per stop.",
     "routing_provider": "Open Source Routing Machine (OSRM) driving profile via public endpoint."
   },
@@ -311,19 +309,19 @@ python manage.py runserver
 
 ## Automated Test Suite
 
-The test suite contains **40 unit and integration tests** verifying all requirements without depending on live network services:
+The test suite contains **29 unit and integration tests** verifying all requirements without depending on live network services:
 
 ```bash
 python manage.py test tests
 ```
 
 ### Test Coverage Highlights:
-- **`tests/test_optimizer.py`:** Short routes (<500 mi), medium routes (800 mi), long routes (1,400 mi), capacity fill-up trade-offs ($125 vs $175 bare-minimum), global vs local coordination ($85 vs $129 trap), closed-form cash verification ($160 exact), input validation parameter bounds, non-finite input rejection (`NaN`/`inf`), starting fuel below capacity (20 gal), 500-mile gap infeasibility, empty candidate dataset, full-precision non-clamping physical conservation, and backward-only rounding deficit correction strictly at prior reachable stops with headroom.
-- **`tests/test_accounting.py`:** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, strict non-clamping negative balance rejection, FIFO fuel inventory valuation with destination ending asset reconciliation, and exact mathematical assertions for the inventory conservation equation across short and multi-stop trips under both default ($3.50) and custom reference prices.
+- **`tests/test_optimizer.py`:** Short routes (<500 mi), medium routes (800 mi), long routes (1,400 mi), cheapest-station preference, 500-mile gap infeasibility, empty candidate dataset.
+- **`tests/test_accounting.py`:** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, remaining tank level validation.
 - **`tests/test_corridor.py`:** Haversine distance accuracy, station filtering within 10-mile radius, exclusion of distant stations, mile marker ordering.
 - **`tests/test_geocoding.py`:** Raw coordinate parsing, US boundary enforcement, local cache resolution, mocked Nominatim fallback and timeout handling.
 - **`tests/test_fuel_data.py`:** Highway and exit parsing regex, Canadian province filtering.
-- **`tests/test_api.py`:** Successful POST requests, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, custom reference fuel price requests, end-to-end API inventory conservation assertions, and interactive map HTML rendering.
+- **`tests/test_api.py`:** Successful POST requests, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, and interactive map HTML rendering.
 
 ---
 
@@ -333,50 +331,6 @@ Measured on standard development hardware:
 
 | Journey | Distance | Time | External Calls | Refueling Stops |
 |---|---|---|---|---|
-| **Dallas, TX $\to$ Houston, TX** | 239.6 miles | **1.17 s** | 1 (OSRM) | 0 (direct) |
-| **Chicago, IL $\to$ Atlanta, GA** | 685.0 miles | **1.58 s** | 1 (OSRM) | 2 stops |
-| **New York, NY $\to$ Los Angeles, CA** | 2,800.6 miles | **3.66 s** | 1 (OSRM) | 13 stops |
-
----
-
-## 5-Minute Loom Walkthrough Script
-
-Use this structured outline when recording your submission video:
-
-### 1. Introduction (0:00 – 0:45)
-- State your name and the role: *Backend Django Engineer at Spotter AI*.
-- State the objective: *An API that finds optimal, cost-effective fuel stops along a US driving route under a 500-mile vehicle range constraint at 10 MPG.*
-- Highlight architectural pillars:
-  1. *Continuous-State Linear Programming (HiGHS solver) guaranteeing global cost optimality and exact tank-state tracking.*
-  2. *Single external routing API call per route.*
-  3. *Offline geocoded truckstop database ensuring sub-second to low-latency response times.*
-
-### 2. Live Postman Demonstration (0:45 – 2:30)
-- **Request 1: Short Trip (Dallas to Houston, 240 mi):**
-  - Send request. Point out execution time (~1.1 s).
-  - Show that 0 fuel stops are required, but 24.0 gallons are consumed, and economic trip cost is correctly calculated (\$73.83).
-- **Request 2: Medium Trip (Chicago to Atlanta, 685 mi):**
-  - Send request. Show that 2 optimal stops were selected.
-  - Show the driving legs: every leg is $\le 500$ miles (480.6 mi and 87.6 mi).
-  - Point out how the optimizer skipped more expensive stations to refuel at Chattanooga for \$2.786/gal.
-- **Request 3: Error Handling:**
-  - Send an invalid request (e.g. coordinates in Paris, France). Show clear `400 Bad Request` with `LOCATION_OUTSIDE_USA`.
-
-### 3. Visual Map Demonstration (2:30 – 3:30)
-- Open browser to `http://127.0.0.1:8000/map/?origin=Chicago,+IL&destination=Atlanta,+GA`.
-- Show the interactive Leaflet map:
-  - Route polyline highlighted in blue.
-  - Green origin pin, red destination pin.
-  - Click on an orange fuel stop pin to show popup with station name, address, mile marker, retail price, and fill-up cost.
-  - Show the sidebar dashboard metrics.
-
-### 4. Code Architecture & Key Technical Decisions (3:30 – 4:45)
-- Open VS Code and quickly showcase the key modules:
-  - `api/models.py`: Point out `coordinate_precision` and multi-price variant tracking (`min_price`, `max_price`).
-  - `api/services/corridor.py`: Point out the bounding-box filter and Haversine projection for fast corridor matching.
-  - `api/services/optimizer.py`: Explain the Continuous Linear Programming formulation (HiGHS solver) and why it guarantees optimal fueling without greedy edge-case failures.
-  - `api/services/accounting.py`: Explain the separation of fuel consumed vs. fuel purchased and FIFO inventory valuation.
-
-### 5. Conclusion (4:45 – 5:00)
-- Highlight the automated test suite: *40 comprehensive unit and integration tests passing in ~0.12 seconds*.
-- Conclude: *Thank you for your time, and I look forward to discussing the architecture further.*
+| **Dallas, TX -> Houston, TX** | 239.6 miles | **1.17 s** | 1 (OSRM) | 0 (direct) |
+| **Chicago, IL -> Atlanta, GA** | 685.0 miles | **1.58 s** | 1 (OSRM) | 2 stops |
+| **New York, NY -> Los Angeles, CA** | 2,800.6 miles | **3.66 s** | 1 (OSRM) | 13 stops |

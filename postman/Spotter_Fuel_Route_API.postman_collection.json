@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "spotter-fuel-router-api-v1",
     "name": "Spotter AI - Fuel Route Optimizer API",
-    "description": "API collection for Spotter AI Backend Django hiring assessment. Optimizes driving routes and refueling stops under a 500-mile vehicle range constraint.",
+    "description": "API collection for Spotter Fuel Route Optimizer. Calculates driving routes and cost-effective refueling plans under vehicle range constraints.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
