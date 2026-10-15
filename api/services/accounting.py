@@ -17,7 +17,7 @@ def calculate_fuel_accounting(
       2. Fuel purchased at intermediate stations during trip
       3. Cash out-of-pocket expenditure during trip
       4. Estimated total economic cost of trip (including departure tank fuel)
-      5. Final fuel level at destination
+      5. Final fuel level at destination, strictly reconciled with simulated tank balance
     """
     total_fuel_consumed = round(total_distance_miles / fuel_economy_mpg, 2)
 
@@ -52,7 +52,7 @@ def calculate_fuel_accounting(
                 'longitude': st.longitude,
                 'precision': st.coordinate_precision,
                 'source': st.coordinate_source,
-                'corridor_offset_miles': item['corridor_distance_miles'],
+                'corridor_offset_miles': item.get('corridor_distance_miles', 0.0),
             },
             'retail_price_per_gallon': price,
             'price_range': [st.min_price, st.max_price],
@@ -61,24 +61,24 @@ def calculate_fuel_accounting(
             'distance_from_last_stop_miles': dist_from_last,
             'gallons_purchased': gallons,
             'cost_usd': cost,
+            'arrival_fuel_gallons': item.get('arrival_fuel_gallons'),
+            'departure_fuel_gallons': item.get('departure_fuel_gallons'),
         })
 
     fuel_purchased_during_trip = round(fuel_purchased_during_trip, 2)
     expenditure_during_trip = round(expenditure_during_trip, 2)
 
-    # Initial fuel consumed from tank before first purchase (or entire trip if no stop)
-    initial_fuel_consumed = round(total_fuel_consumed - fuel_purchased_during_trip, 2)
-    if initial_fuel_consumed < 0:
-        initial_fuel_consumed = 0.0
+    # Physical reconciliation: Remaining = Initial + Purchased - Consumed
+    reconciled_dest_fuel = round(initial_tank_gallons + fuel_purchased_during_trip - total_fuel_consumed, 2)
 
-    # Total economic cost of trip = cash spent + value of initial fuel consumed
-    initial_fuel_cost = round(initial_fuel_consumed * reference_fuel_price, 2)
+    # Initial departure fuel burned: portion of initial tank consumed
+    initial_fuel_burned = round(min(initial_tank_gallons, total_fuel_consumed), 2)
+    initial_fuel_cost = round(initial_fuel_burned * reference_fuel_price, 2)
     estimated_total_fuel_cost = round(expenditure_during_trip + initial_fuel_cost, 2)
 
-    # Remaining fuel at destination
-    # Start with initial_tank_gallons + purchased - consumed
-    remaining_at_dest = round(initial_tank_gallons + fuel_purchased_during_trip - total_fuel_consumed, 2)
-    remaining_at_dest = max(0.0, min(50.0, remaining_at_dest))
+    # Validate that remaining fuel does not violate physical boundaries (no hiding errors via clamping)
+    if reconciled_dest_fuel < -0.05:
+        raise ValueError(f"Impossible negative fuel balance at destination: {reconciled_dest_fuel:.2f} gal")
 
     return {
         'total_distance_miles': total_distance_miles,
@@ -89,10 +89,10 @@ def calculate_fuel_accounting(
         'estimated_total_fuel_cost_usd': estimated_total_fuel_cost,
         'initial_fuel_accounting': {
             'starting_tank_gallons': initial_tank_gallons,
-            'initial_fuel_burned_gallons': initial_fuel_consumed,
+            'initial_fuel_burned_gallons': initial_fuel_burned,
             'initial_fuel_cost_valuation_usd': initial_fuel_cost,
             'reference_price_per_gallon': reference_fuel_price,
-            'remaining_fuel_at_destination_gallons': remaining_at_dest,
+            'remaining_fuel_at_destination_gallons': reconciled_dest_fuel,
         },
         'fuel_stops_count': len(formatted_stops),
         'fuel_stops': formatted_stops,

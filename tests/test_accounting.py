@@ -82,6 +82,27 @@ class FuelAccountingTests(unittest.TestCase):
         self.assertEqual(result['cash_expenditure_at_pumps_usd'], expected_cash)
         self.assertEqual(result['fuel_stops_count'], 2)
 
+    def test_reconciliation_identity_and_no_clamping(self):
+        """
+        Confirms exact reconciliation:
+        starting_tank + fuel_purchased - total_consumed == remaining_fuel
+        and raises ValueError on impossible negative remaining fuel rather than clamping.
+        """
+        stops = [self.make_mock_stop(1, "Stop 1", 300.0, 10.0, 3.00)]
+        # Trip of 800 miles at 10 MPG consumes 80 gal.
+        # Starting with 50 gal + 10 gal purchased = 60 gal.
+        # Deficit of 20 gal -> remaining would be -20 gal!
+        # Must raise ValueError, NOT silently clamp to 0.0.
+        with self.assertRaises(ValueError) as ctx:
+            calculate_fuel_accounting(
+                total_distance_miles=800.0,
+                selected_stops=stops,
+                legs=[],
+                fuel_economy_mpg=10.0,
+                initial_tank_gallons=50.0,
+            )
+        self.assertIn("Impossible negative fuel balance", str(ctx.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

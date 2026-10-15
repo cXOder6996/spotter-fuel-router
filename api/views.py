@@ -16,13 +16,19 @@ from api.services.accounting import calculate_fuel_accounting
 logger = logging.getLogger(__name__)
 
 
-def run_route_optimization_pipeline(origin_str: str, destination_str: str, corridor_radius: float = 10.0, price_policy: str = 'min'):
+def run_route_optimization_pipeline(
+    origin_str: str,
+    destination_str: str,
+    corridor_radius: float = 10.0,
+    price_policy: str = 'min',
+    starting_tank_gallons: float = 50.0
+):
     """
     Executes the full pipeline:
       1. Geocodes origin & destination (with US validation)
       2. Fetches driving route from OSRM (1 call)
       3. Filters candidate truck stops within route corridor
-      4. Optimizes refueling stops with 500-mile range constraint
+      4. Optimizes refueling stops with 500-mile range constraint & tank state tracking
       5. Calculates separated fuel consumption and economic accounting
     """
     t_start = time.perf_counter()
@@ -46,23 +52,24 @@ def run_route_optimization_pipeline(origin_str: str, destination_str: str, corri
     if candidate_stops:
         ref_price = round(sum(s['station'].primary_price for s in candidate_stops) / len(candidate_stops), 4)
 
-    # Step 4: Optimization
+    # Step 4: Optimization (Continuous Linear Programming with HiGHS)
     opt_result = optimize_fuel_stops(
         total_distance_miles=total_dist,
         candidate_stops=candidate_stops,
         max_range_miles=getattr(settings, 'VEHICLE_MAX_RANGE_MILES', 500.0),
         fuel_economy_mpg=getattr(settings, 'VEHICLE_FUEL_ECONOMY_MPG', 10.0),
         tank_capacity_gallons=getattr(settings, 'VEHICLE_TANK_CAPACITY_GALLONS', 50.0),
+        initial_tank_gallons=starting_tank_gallons,
         initial_fuel_price_estimate=ref_price,
     )
 
-    # Step 5: Accounting
+    # Step 5: Accounting (Strict physical tank reconciliation)
     accounting = calculate_fuel_accounting(
         total_distance_miles=total_dist,
         selected_stops=opt_result['selected_stops'],
         legs=opt_result['legs'],
         fuel_economy_mpg=getattr(settings, 'VEHICLE_FUEL_ECONOMY_MPG', 10.0),
-        initial_tank_gallons=getattr(settings, 'VEHICLE_TANK_CAPACITY_GALLONS', 50.0),
+        initial_tank_gallons=starting_tank_gallons,
         reference_fuel_price=ref_price,
     )
 
@@ -90,7 +97,7 @@ def run_route_optimization_pipeline(origin_str: str, destination_str: str, corri
                 'max_range_miles': getattr(settings, 'VEHICLE_MAX_RANGE_MILES', 500.0),
                 'fuel_economy_mpg': getattr(settings, 'VEHICLE_FUEL_ECONOMY_MPG', 10.0),
                 'tank_capacity_gallons': getattr(settings, 'VEHICLE_TANK_CAPACITY_GALLONS', 50.0),
-                'initial_tank_state': 'full (50.0 gal / 500.0 mi range at departure)',
+                'initial_tank_state': f"{starting_tank_gallons:.1f} gal ({starting_tank_gallons * getattr(settings, 'VEHICLE_FUEL_ECONOMY_MPG', 10.0):.1f} mi range at departure)",
             },
             'total_fuel_consumed_gallons': accounting['total_fuel_consumed_gallons'],
             'total_fuel_purchased_during_trip_gallons': accounting['fuel_purchased_during_trip_gallons'],
@@ -106,8 +113,8 @@ def run_route_optimization_pipeline(origin_str: str, destination_str: str, corri
         'route_geometry': geometry,
         'assumptions_and_limitations': {
             'vehicle_model': 'Standard heavy truck with 500-mile max range and uniform 10 MPG fuel economy.',
-            'starting_fuel_rule': 'Vehicle is assumed to depart with a full 50-gallon tank. Cash expenditure covers fuel bought during the journey; estimated total fuel cost includes valuation of starting fuel consumed.',
-            'coordinate_precision': 'Truck stops are mapped to verified highway corridor coordinates derived from national geographic gazetteer and interstate junction reference. Stations are not represented as exact pump GPS points.',
+            'starting_fuel_rule': f"Vehicle departs with {starting_tank_gallons:.1f} gallons in tank. Cash expenditure covers fuel bought during the journey; estimated total fuel cost includes valuation of starting fuel consumed.",
+            'coordinate_precision': 'Truck stops are mapped to verified highway corridor coordinates derived from national geographic gazetteer and interstate junction reference (city corridor centroids). Stations are not represented as exact pump GPS points.',
             'fuel_pricing': f"Default price selection policy '{price_policy}'. Multiple prices per terminal reflect reported fuel grade variants; station price ranges are documented per stop.",
             'routing_provider': 'Open Source Routing Machine (OSRM) driving profile via public endpoint.',
         },
@@ -139,9 +146,16 @@ class OptimizeRouteView(APIView):
         destination = serializer.validated_data['destination']
         radius = serializer.validated_data.get('corridor_radius_miles', 10.0)
         policy = serializer.validated_data.get('price_policy', 'min')
+        starting_tank = serializer.validated_data.get('starting_tank_gallons', 50.0)
 
         try:
-            result = run_route_optimization_pipeline(origin, destination, corridor_radius=radius, price_policy=policy)
+            result = run_route_optimization_pipeline(
+                origin,
+                destination,
+                corridor_radius=radius,
+                price_policy=policy,
+                starting_tank_gallons=starting_tank
+            )
             return Response(result, status=status.HTTP_200_OK)
 
         except LocationOutsideUSAError as e:
