@@ -20,9 +20,9 @@ Includes an interactive Leaflet.js route visualizer at `http://127.0.0.1:8000/ma
 
 ## Core Features & Architecture
 
-- **Deterministic Optimization:** Formulates refueling as a **Shortest-Path Dynamic Programming (DAG)** problem over feasible driving legs. Mathematically guarantees global minimum fuel expenditure while strictly enforcing that every leg between consecutive stops (and origin/destination) is &le; 500 miles.
+- **Continuous Linear Programming Optimization:** Formulates refueling as a **Continuous-State Bounded Linear Program** solved via SciPy's high-performance C++ `HiGHS` solver. Mathematically guarantees global minimum fuel expenditure while strictly tracking arrival and departure tank levels, enforcing the 50-gallon capacity constraint, and ensuring no driving leg exceeds the 500-mile vehicle range.
 - **Strict External Call Budget:** Consistently consumes **exactly 1 external routing API call** per unique route (via Open Source Routing Machine / OSRM) with in-memory caching. Resolves 99.8% of US cities locally without external geocoder calls.
-- **Rigorous Fuel Accounting:** Separates total fuel consumed by vehicle physics (`total_distance / 10`), fuel purchased at intermediate stops, cash paid at pumps, and total economic trip cost (accounting for departure tank valuation).
+- **Rigorous Fuel Accounting:** Separates total fuel consumed by vehicle physics (`total_distance / 10`), fuel purchased at intermediate stops, cash paid at pumps, and total economic trip cost (including departure tank fuel valuation).
 - **Sub-Second to Low-Latency Performance:** Evaluates cross-country routes (2,800 miles) in ~3.6 seconds and regional routes (240–700 miles) in 1.1–1.5 seconds.
 - **Dual Interface:** Full REST API (`POST /api/v1/optimize-route/`) for programmatic integration alongside an interactive web map (`GET /map/`) with route polyline, origin/destination pins, and clickable fuel stop popups.
 
@@ -78,23 +78,26 @@ A vehicle driving `D` miles at 10 MPG consumes exactly `D / 10` gallons of fuel.
 
 ## Refueling Optimization Algorithm
 
-### Shortest-Path Dynamic Programming (DAG)
-The optimizer models the single-vehicle refueling problem as finding the shortest path through a **Directed Acyclic Graph (DAG) of Feasible Driving Legs**:
+### Continuous-State Linear Programming (HiGHS Solver)
+The optimizer models the single-vehicle refueling problem as a **Bounded Linear Program** solved via the C++ `HiGHS` solver in SciPy (`scipy.optimize.linprog(..., method='highs')`):
 
 1. **Candidate Corridor Filtering:** Extracts truck stops within 10 miles of the route polyline using bounding-box spatial indexing and Haversine projection, computing each station's highway mile marker.
-2. **DAG Construction:**
-   - **Node 0:** Origin (mile 0.0, departure with full 50-gallon tank).
-   - **Nodes 1 ... M:** Candidate truck stops ordered strictly by mile marker `d_1 < d_2 < ... < d_M`.
-   - **Node M+1:** Destination (mile `D`).
-3. **Feasible Edges:** A directed edge `u -> v` exists if and only if:
-   `0 < d_v - d_u <= 500.0 miles` (the vehicle's maximum driving range).
-4. **Edge Weight:**
-   - For `u = 0` (Origin): Cash cost is $0.00 (fuel already in tank at start).
-   - For `u > 0` (Station): `weight(u -> v) = ((d_v - d_u) / 10.0) * Price(u)`.
-5. **Backward Induction:**
-   `DP(i) = min_{j: d_j - d_i <= 500} [ weight(i -> j) + DP(j) ]`
-   `DP(Destination) = 0.0`
-6. **Feasibility Enforcement:** If `DP(0) = infinity`, a gap between consecutive reachable stations exceeds 500 miles. The system returns an explicit `422 Unprocessable Entity` error detailing the exact gap.
+2. **Decision Variables:**
+   `b_0, b_1, ..., b_{M-1} >= 0`, where `b_i` represents the continuous gallons purchased at candidate station `i`.
+3. **Objective:**
+   `min sum_{i=0}^{M-1} (price_i * b_i)` (minimizing total cash fuel expenditure).
+4. **Physics & Tank Constraints:**
+   - **Non-negative Fuel on Arrival:** At every point along the route (arrival at station `i+1` and destination), cumulative fuel added must cover cumulative distance burned:
+     `initial_tank_gallons + sum_{k <= i} b_k - (mile_{i+1} / MPG) >= 0`
+   - **Tank Capacity Upper Bound:** Immediately after purchase at station `i`, fuel in the tank cannot exceed the 50-gallon capacity:
+     `initial_tank_gallons + sum_{k <= i} b_k - (mile_i / MPG) <= 50.0`
+   - **Variable Bounds:** `0.0 <= b_i <= 50.0` gallons per station.
+5. **Full-Precision Solution Validation & Quantization Re-Simulation:**
+   - The full-precision LP solution is verified first across all route checkpoints.
+   - Purchases are quantized to pump precision (2 decimal places).
+   - An iterative backward correction algorithm corrects any rounding deficit strictly at earlier reachable stations with spare tank headroom.
+   - The final quantized plan is re-simulated without artificial clamping to verify that non-negative fuel and tank capacity constraints are mathematically satisfied.
+6. **Feasibility Enforcement:** If consecutive fueling opportunities exceed 500 miles or departure fuel cannot reach the first station, the API returns `422 Unprocessable Entity` specifying the exact gap.
 
 ---
 
@@ -309,19 +312,19 @@ python manage.py runserver
 
 ## Automated Test Suite
 
-The test suite contains **29 unit and integration tests** verifying all requirements without depending on live network services:
+The test suite contains **40 unit and integration tests** verifying all requirements without depending on live network services:
 
 ```bash
 python manage.py test tests
 ```
 
 ### Test Coverage Highlights:
-- **`tests/test_optimizer.py`:** Short routes (<500 mi), medium routes (800 mi), long routes (1,400 mi), cheapest-station preference, 500-mile gap infeasibility, empty candidate dataset.
-- **`tests/test_accounting.py`:** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, remaining tank level validation.
-- **`tests/test_corridor.py`:** Haversine distance accuracy, station filtering within 10-mile radius, exclusion of distant stations, mile marker ordering.
-- **`tests/test_geocoding.py`:** Raw coordinate parsing, US boundary enforcement, local cache resolution, mocked Nominatim fallback and timeout handling.
-- **`tests/test_fuel_data.py`:** Highway and exit parsing regex, Canadian province filtering.
-- **`tests/test_api.py`:** Successful POST requests, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, and interactive map HTML rendering.
+- **`tests/test_optimizer.py` (11 tests):** Input bounds and NaN/inf rejection, starting fuel below capacity (20 gal), short routes (<500 mi), cheap-station capacity top-offs, global vs local price coordination, closed-form known-cost verification, 500-mile gap infeasibility, empty candidate dataset, full-precision physical conservation, and backward-only rounding deficit correction strictly at prior reachable stops with headroom.
+- **`tests/test_accounting.py` (6 tests):** 10 MPG consumption verification, zero-stop trip accounting, multi-stop cost balancing, strict non-clamping negative balance rejection, FIFO fuel inventory valuation with destination ending asset reconciliation, and exact mathematical assertions for the inventory conservation equation across short and multi-stop trips under both default ($3.50) and custom reference prices.
+- **`tests/test_corridor.py` (3 tests):** Haversine distance accuracy, station filtering within 10-mile radius, exclusion of distant stations, and mile marker ordering.
+- **`tests/test_geocoding.py` (7 tests):** Raw coordinate parsing, US boundary enforcement, local cache resolution, mocked Nominatim fallback, and timeout handling.
+- **`tests/test_fuel_data.py` (4 tests):** Highway and exit parsing regex (Interstate, US Highway, State Route), and Canadian province filtering.
+- **`tests/test_api.py` (9 tests):** Successful POST requests, parameter aliases (`start`/`finish`), missing payload validation, outside USA rejection, 504 timeouts, 404 route errors, custom reference fuel price requests, end-to-end API inventory conservation assertions, and interactive map HTML rendering.
 
 ---
 
